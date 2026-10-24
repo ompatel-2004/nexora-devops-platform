@@ -61,7 +61,7 @@
             },
             "AllowedHosts": "*",
             "ConnectionStrings": {
-              "InventoryDb": "Host=localhost;Port=5432;Database=inventory_db;Username=nexora_admin;Password=devops_secure_password_123;"
+              "InventoryDb": "Host=localhost;Port=5432;Database=inventory_db;Username=nexora_admin;Password={{ lookup("env", "DB_PASSWORD") | default("", true) }};"
             },
             "APP_VERSION": "{{ app_version }}",
             "SIMULATE_FAILURE": "{{ simulate_failure | default('false') }}"
@@ -98,7 +98,7 @@
         db: inventory_db
         login_host: localhost
         login_user: nexora_admin
-        login_password: devops_secure_password_123
+        login_password: {{ lookup("env", "DB_PASSWORD") | default("", true) }}
         query: >
           INSERT INTO deployments (application, version, environment, commit_sha, pipeline_id, status, completed_at, deployed_by)
           VALUES ('{{ app_name }}', '{{ app_version }}', '{{ env_name | upper }}', 'release-commit', 'pipe-prod', 'SUCCESS', NOW(), 'ansible-automation');
@@ -110,7 +110,7 @@
         db: inventory_db
         login_host: localhost
         login_user: nexora_admin
-        login_password: devops_secure_password_123
+        login_password: {{ lookup("env", "DB_PASSWORD") | default("", true) }}
         query: >
           INSERT INTO deployments (application, version, environment, commit_sha, pipeline_id, status, completed_at, deployed_by)
           VALUES ('{{ app_name }}', '{{ app_version }}', '{{ env_name | upper }}', 'release-commit', 'pipe-prod', 'FAILED', NOW(), 'ansible-automation');

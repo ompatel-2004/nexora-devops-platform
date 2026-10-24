@@ -3,19 +3,20 @@
   hosts: windows
   vars:
     app_name: "{{ application | default('inventory-api') }}"
-    target_env: "{{ env | default('dev') | lower }}"
-    target_version: "{{ rollback_to | default('') }}"
+    env_name: "{{ env | default('dev') | lower }}"
+    target_port: "{{ 8101 if env_name == 'dev' else (8102 if env_name == 'qa' else (8103 if env_name == 'staging' else 8104)) }}"
+    app_pool_name: "{{ app_name }}-{{ env_name }}-pool"
+    site_name: "{{ app_name }}-{{ env_name }}"
+    deploy_path: "C:\\inetpub\\nexora\\{{ env_name }}\\{{ 'api' if app_name == 'inventory-api' else 'web' }}"
+    rollback_version: "{{ rollback_to | default('') }}"
   tasks:
-    - name: Identify previous stable release from deployment audit
-      ansible.windows.win_shell: |
-        $app = "{{ app_name }}"
-        $env = "{{ target_env }}"
-        Write-Host "[ROLLBACK] Executing automated rollback for $app on environment $env..."
-      register: rollback_init
-
-    - name: Restore Application State
+    - name: Execute automated rollback role with aligned variables
       include_role:
         name: rollback
       vars:
-        application_name: "{{ app_name }}"
-        environment_name: "{{ target_env }}"
+        app_name: "{{ app_name }}"
+        env_name: "{{ env_name }}"
+        app_pool_name: "{{ app_pool_name }}"
+        deploy_path: "{{ deploy_path }}"
+        target_port: "{{ target_port }}"
+        target_version: "{{ rollback_version }}"

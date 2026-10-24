@@ -4,7 +4,7 @@
     db: inventory_db
     login_host: localhost
     login_user: nexora_admin
-    login_password: devops_secure_password_123
+    login_password: {{ lookup("env", "DB_PASSWORD") | default("", true) }}
     query: >
       SELECT version FROM deployments 
       WHERE application = '{{ app_name }}' AND environment = '{{ env_name | upper }}' AND status = 'SUCCESS'
@@ -38,7 +38,7 @@
         "Logging": { "LogLevel": { "Default": "Information" } },
         "AllowedHosts": "*",
         "ConnectionStrings": {
-          "InventoryDb": "Host=localhost;Port=5432;Database=inventory_db;Username=nexora_admin;Password=devops_secure_password_123;"
+          "InventoryDb": "Host=localhost;Port=5432;Database=inventory_db;Username=nexora_admin;Password={{ lookup("env", "DB_PASSWORD") | default("", true) }};"
         },
         "APP_VERSION": "{{ rollback_version }}",
         "SIMULATE_FAILURE": "false"
@@ -69,7 +69,7 @@
     db: inventory_db
     login_host: localhost
     login_user: nexora_admin
-    login_password: devops_secure_password_123
+    login_password: {{ lookup("env", "DB_PASSWORD") | default("", true) }}
     query: >
       INSERT INTO deployments (application, version, environment, commit_sha, pipeline_id, status, completed_at, deployed_by, rollback_of)
       VALUES ('{{ app_name }}', '{{ rollback_version }}', '{{ env_name | upper }}', 'rollback-sha', 'rb-001', 'SUCCESS', NOW(), 'ansible-auto-rollback', '{{ failed_version }}');

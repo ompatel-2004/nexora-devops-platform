@@ -78,6 +78,30 @@ pipeline {
                     $targetDir = "$env:BASE_DIR\\artifacts\\$app"
                     if (-not (Test-Path $targetDir)) { New-Item -ItemType Directory -Path $targetDir -Force }
                     
+                    $deps = @()
+                    if ($app -eq "inventory-api") {
+                        $deps = @(
+                            @{ name = "Npgsql"; version = "8.0.2"; purl = "pkg:nuget/Npgsql@8.0.2" },
+                            @{ name = "Microsoft.AspNetCore.OpenApi"; version = "8.0.0"; purl = "pkg:nuget/Microsoft.AspNetCore.OpenApi@8.0.0" }
+                        )
+                    } elseif ($app -eq "reporting-service") {
+                        $deps = @(
+                            @{ name = "spring-boot-starter-web"; version = "3.2.4"; purl = "pkg:maven/org.springframework.boot/spring-boot-starter-web@3.2.4" },
+                            @{ name = "postgresql"; version = "42.7.2"; purl = "pkg:maven/org.postgresql/postgresql@42.7.2" },
+                            @{ name = "spring-boot-starter-actuator"; version = "3.2.4"; purl = "pkg:maven/org.springframework.boot/spring-boot-starter-actuator@3.2.4" }
+                        )
+                    } elseif ($app -eq "inventory-web") {
+                        $pkgPath = "$env:BASE_DIR\\applications\\inventory-web\\package.json"
+                        if (Test-Path $pkgPath) {
+                            $pkg = Get-Content $pkgPath | ConvertFrom-Json
+                            if ($pkg.dependencies) {
+                                foreach ($prop in $pkg.dependencies.PSObject.Properties) {
+                                    $deps += @{ name = $prop.Name; version = $prop.Value; purl = "pkg:npm/$($prop.Name)@$($prop.Value)" }
+                                }
+                            }
+                        }
+                    }
+
                     $sbom = @{
                         bomFormat = "CycloneDX"
                         specVersion = "1.5"
@@ -85,24 +109,13 @@ pipeline {
                         version = 1
                         metadata = @{
                             timestamp = (Get-Date -Format "yyyy-MM-ddTHH:mm:ssZ")
-                            component = @{
-                                name = $app
-                                version = $ver
-                                type = "application"
-                            }
+                            component = @{ name = $app; version = $ver; type = "application" }
                         }
-                        components = @(
-                            @{
-                                name = $app
-                                version = $ver
-                                type = "application"
-                                purl = "pkg:generic/$app@$ver"
-                            }
-                        )
+                        components = $deps
                     } | ConvertTo-Json -Depth 5
-                    
+
                     Set-Content -Path "$targetDir\\$app-$ver.sbom.json" -Value $sbom
-                    Write-Host "[SECURITY] Generated full CycloneDX SBOM at $targetDir\\$app-$ver.sbom.json"
+                    Write-Host "[SECURITY] Generated dependency-driven CycloneDX SBOM at $targetDir\\$app-$ver.sbom.json"
                 '''
             }
         }
@@ -119,7 +132,11 @@ pipeline {
                     $packageFile = "$artifactDir\\$app-$ver.zip"
                     if ($app -eq "reporting-service") {
                         $packageFile = "$artifactDir\\$app-$ver.jar"
-                        Copy-Item "$sourceDir\\target\\reporting-service-1.4.1.jar" $packageFile -Force
+                        $builtJar = "$sourceDir\\target\\reporting-service-$ver.jar"
+                        if (-not (Test-Path $builtJar)) {
+                            $builtJar = Get-ChildItem "$sourceDir\\target\\*.jar" -Exclude "*.original" | Select-Object -First 1 -ExpandProperty FullName
+                        }
+                        Copy-Item $builtJar $packageFile -Force
                     } elseif ($app -eq "inventory-api") {
                         Compress-Archive -Path "$sourceDir\\publish\\*" -DestinationPath $packageFile -Force
                     } elseif ($app -eq "inventory-web") {
@@ -147,6 +164,9 @@ pipeline {
                                 exit 1
                             }
                         }
+                    } else {
+                        Write-Error "[PACKAGE ERROR] Artifact file $packageFile was not created."
+                        exit 1
                     }
                 '''
             }

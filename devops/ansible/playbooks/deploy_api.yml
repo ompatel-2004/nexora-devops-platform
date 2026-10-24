@@ -1,15 +1,14 @@
 ---
-- name: Deploy Inventory API to Target IIS Environment
+- name: Deploy Nexora Inventory API to Windows IIS
   hosts: windows
-  gather_facts: false
   vars:
-    app_version: "{{ version | default('1.4.1') }}"
-    env_name: "{{ env | default('dev') }}"
-    site_name: "inventory-api-{{ env_name }}"
-    app_pool_name: "inventory-api-{{ env_name }}-pool"
-    deploy_path: "C:\\inetpub\\nexora\\{{ env_name }}\\api"
-    artifact_path: "C:\\nexora-devops-platform\\artifacts\\inventory-api\\inventory-api-{{ app_version }}.zip"
+    app_name: "inventory-api"
+    env_name: "{{ env | default('dev') | lower }}"
+    app_version: "{{ version | default('1.4.2') }}"
     target_port: "{{ 8101 if env_name == 'dev' else (8102 if env_name == 'qa' else (8103 if env_name == 'staging' else 8104)) }}"
-    log_level: "{{ 'Debug' if env_name == 'dev' else 'Information' }}"
+    app_pool_name: "inventory-api-{{ env_name }}-pool"
+    site_name: "inventory-api-{{ env_name }}"
+    deploy_path: "C:\\inetpub\\nexora\\{{ env_name }}\\api"
+    simulate_fail: "{{ simulate_failure | default('false') }}"
   roles:
     - application_deploy

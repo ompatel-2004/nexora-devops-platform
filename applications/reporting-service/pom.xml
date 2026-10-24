@@ -6,7 +6,7 @@
 
     <groupId>com.nexora</groupId>
     <artifactId>reporting-service</artifactId>
-    <version>1.4.1</version>
+    <version>1.4.2</version>
     <packaging>jar</packaging>
 
     <parent>
