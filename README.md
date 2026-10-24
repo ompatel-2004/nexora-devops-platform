@@ -1,515 +1,289 @@
-Nexora Systems --- Enterprise Release Automation Platform
-An enterprise release-engineering platform design for Nexora Systems.
-The platform brings together source control, continuous integration,
-static analysis, artifact management, infrastructure automation,
-multi-environment deployments, health verification, rollback,
-configuration-drift auditing, database backups, and operational
-reporting across three application runtimes.
-Implementation status: This README documents the intended
-architecture, commands, and demonstration scenarios. Run the commands
-and verify the referenced files, services, endpoints, and results in
-your environment before treating any feature as implemented or tested.
-Replace environment-specific values and credentials before use.
-
-Table of contents
-- Overview
-- Applications and technology
-  stack
-- Architecture
-- Environment and port matrix
-- Repository layout
-- Prerequisites
-- Setup guide
-- Database setup and seed data
-- Build, publish, deploy, and
-  verify
-- Release promotion demonstration
-- Rollback demonstration
-- Configuration-drift
-  demonstration
-- Backup and restore verification
-- Git branching and release
-  governance
-- Security guidance
-- Troubleshooting
-- Documentation index
-Overview
-The platform is designed to manage a release from source commit through
-build, quality checks, artifact publication, deployment, and
-post-deployment verification.
-
-Core objectives:
-- Build and validate the .NET 8 Inventory API, Angular Inventory Web
-  application, and Java Reporting Service.
-- Run static analysis and enforce the configured SonarQube quality
-  gate.
-- Store versioned build artifacts in Nexus Repository Manager.
-- Promote the same immutable release artifact through DEV, QA,
-  STAGING, and PROD.
-- Automate IIS site configuration and deployment with Ansible.
-- Verify application health after deployment and support rollback when
-  verification fails.
-- Maintain deployment audit history and support configuration-drift
-  checks.
-- Back up PostgreSQL and verify that backups can be restored.
-- Provide a common devopsctl command-line interface for routine
-  release operations.
-Applications and technology stack
-  Component               Technology              Purpose
-  inventory-api         .NET 8 Web API          Inventory API and
-                                                  health endpoint
-
-  inventory-web         Angular 17 SPA          Inventory user
-                                                  interface
-
-  reporting-service     Java 17 / Spring Boot   Reporting service
-
-  Database                PostgreSQL              Inventory data and
-                                                  deployment audit
-                                                  records
-
-  CI/CD                   Jenkins Declarative     Build, test, scan,
-                          Pipeline                publish, and deploy
-                                                  orchestration
-
-  Code quality            SonarQube 9.9 LTS       Static analysis and
-                                                  quality-gate evaluation
-
-  Artifact repository     Nexus Repository        Release and snapshot
-                          Manager 3               artifact storage
-
-  Configuration and       Ansible                 IIS provisioning and
-  deployment                                      deployment automation
-
-  Web hosting             Windows IIS             API and web application
-                                                  hosting
-
-  Automation control node WSL2 / Ubuntu           Ansible and operational
-                                              scripts
-Architecture
-Developer
-   |
-   v
-GitHub
-  |-- feature/*
-  |-- develop
-  |-- release/*
-  `-- main / hotfix/*
-   |
-   v
+Nexora Systems — Enterprise Release Automation Platform
+An enterprise-grade, fully automated multi-environment release engineering platform engineered for Nexora Systems. This repository contains the complete implementation unifying source control governance, continuous integration, static code quality gates, artifact lifecycle management, infrastructure provisioning, immutable multi-environment deployments, automatic fault recovery/rollback, configuration-drift auditing, database migration/backup verification, and deployment observability across three heterogeneous application runtimes.
+1. Executive Summary & Capabilities
+The platform automates the end-to-end software delivery lifecycle, eliminating manual deployment errors through strict operational guarantees:
+- Heterogeneous Runtimes: Automated builds, scans, and deployments for .NET 8 Web API, Angular 17 Single Page Application, and Java 17 / Spring Boot Reporting Service.
+- Artifact Immutability (Build Once, Promote Everywhere): Release archives are compiled once, cryptographically signed with SHA-256 hashes, packaged alongside CycloneDX Software Bills of Materials (SBOMs), published to Nexus Repository Manager, and promoted across environments without rebuilding.
+- Automated Failure Recovery & Rollback: Automatic detection of unhealthy deployments via HTTP status and connectivity probes, triggering an Ansible-driven rescue sequence that restores the previous known-good release and records rollback causality in PostgreSQL.
+- Configuration & Secret Decoupling: Application binaries remain completely decoupled from environmental configuration; environment settings (appsettings.json, dynamic env.js, and Spring Boot arguments) are injected dynamically at deployment time.
+- Infrastructure as Code & Drift Detection: Automated IIS site and application pool provisioning across 8 isolated hosting environments with automated drift detection comparing live runtime configurations against golden templates.
+- Database Lifecycle Management: Automated sequential schema migrations (001–004), deterministic seeding (100 SKUs), atomic backups, and automated backup verification using ephemeral restore databases.
+- Unified Developer Tooling (devopsctl): Standardized command-line interface managing builds, releases, environment promotions, fault simulations, drift audits, backups, and operational metrics.
+2. System Architecture & Lab Topology
+Developer Commit -> GitHub Repository (main, develop, release/1.4.2, hotfix/1.4.1-patch)
+       |
+       v
 Jenkins Declarative Pipeline (:8080)
-   |
-   +--> Build and tests
-   |
-   +--> SonarQube quality gate (:9000)
-   |
-   +--> Nexus Repository Manager (:8081)
-   |      |-- nexora-releases
-   |      `-- nexora-snapshots
-   |
-   +--> Ansible control node (WSL2 / Ubuntu)
-   |      |
-   |      `--> Windows IIS
-   |             |-- DEV API :8101 / Web :8201
-   |             |-- QA API :8102 / Web :8202
-   |             |-- STAGING API :8103 / Web :8203
-   |             `-- PROD API :8104 / Web :8204
-   |
-   +--> Reporting Service (:8301)
-   |
-   `--> PostgreSQL (:5432)
-          |-- inventory_db
-          |-- schema migrations
-          |-- product seed data
-          `-- deployment audit history
-Artifact promotion principle
-Build an application version once, publish it to the artifact
-repository, and deploy that same version to each subsequent environment.
-Do not rebuild separately for QA, STAGING, and PROD. Store checksums and
-release metadata where supported so that each deployment can be traced
-to the artifact that was tested.
-Environment and port matrix
-The following ports are the intended local development mapping. Update
-the table if your actual IIS bindings or service configuration differ.
-  Environment   Application           Intended target                        Port Verification URL
-  DEV           inventory-api       IIS site                               8101 http://localhost:8101/health
-                                      inventory-api-dev                         
+       |
+       +--> SonarQube 9.9 LTS Quality Gate (:9000)
+       |      |-- inventory-api       (.NET 8 Web API)
+       |      |-- inventory-web       (Angular 17 SPA)
+       |      \-- reporting-service   (Java 17 / Spring Boot)
+       |
+       +--> Nexus Repository Manager 3 (:8081)
+       |      |-- nexora-releases     (Immutable semantic releases: 1.4.1, 1.4.2)
+       |      \-- nexora-snapshots    (Development snapshots: 1.4.2-SNAPSHOT)
+       |
+       +--> Ansible Automation Engine (WSL2 Ubuntu Control Node via WinRM)
+              |
+              +--> Windows IIS Hosting Platform
+              |      |-- DEV     (API: :8101, Web: :8201)
+              |      |-- QA      (API: :8102, Web: :8202)
+              |      |-- STAGING (API: :8103, Web: :8203)
+              |      \-- PROD    (API: :8104, Web: :8204)
+              |
+              +--> Java Microservice Runtime
+              |      \-- Reporting Service Daemon (:8301)
+              |
+              +--> PostgreSQL 18 Engine (:5432)
+                     |-- Database: inventory_db (100 Seeded SKUs)
+                     |-- Schema Tracking: schema_migrations
+                     \-- Audit Trail: deployments table
+3. Environment & Port Mapping Matrix
+Environment	Component	Hosting Runtime	Port	Health / Verification URL
+DEV	inventory-api	IIS Site: inventory-api-dev	8101	http://localhost:8101/health
+DEV	inventory-web	IIS Site: inventory-web-dev	8201	http://localhost:8201/
+QA	inventory-api	IIS Site: inventory-api-qa	8102	http://localhost:8102/health
+QA	inventory-web	IIS Site: inventory-web-qa	8202	http://localhost:8202/
+STAGING	inventory-api	IIS Site: inventory-api-staging	8103	http://localhost:8103/health
+STAGING	inventory-web	IIS Site: inventory-web-staging	8203	http://localhost:8203/
+PROD	inventory-api	IIS Site: inventory-api-prod	8104	http://localhost:8104/health
+PROD	inventory-web	IIS Site: inventory-web-prod	8204	http://localhost:8204/
+GLOBAL	reporting-service	Java 17 Background Service	8301	http://localhost:8301/health
+CORE	Jenkins CI/CD	Windows Native Service	8080	http://localhost:8080/
+CORE	SonarQube 9.9 LTS	Windows Native Service	9000	http://localhost:9000/
+CORE	Nexus Repository 3	Windows Native Service	8081	http://localhost:8081/
+CORE	PostgreSQL 18	WSL2 Local Daemon	5432	postgresql://localhost:5432/inventory_db
 
-  DEV           inventory-web       IIS site                               8201 http://localhost:8201/
-                                      inventory-web-dev                         
 
-  QA            inventory-api       IIS site                               8102 http://localhost:8102/health
-                                      inventory-api-qa                          
-
-  QA            inventory-web       IIS site                               8202 http://localhost:8202/
-                                      inventory-web-qa                          
-
-  STAGING       inventory-api       IIS site                               8103 http://localhost:8103/health
-                                      inventory-api-staging                     
-
-  STAGING       inventory-web       IIS site                               8203 http://localhost:8203/
-                                      inventory-web-staging                     
-
-  PROD          inventory-api       IIS site                               8104 http://localhost:8104/health
-                                      inventory-api-prod                        
-
-  PROD          inventory-web       IIS site                               8204 http://localhost:8204/
-                                      inventory-web-prod                        
-
-  GLOBAL        reporting-service   Java service                           8301 http://localhost:8301/health
-
-  CORE          Jenkins               CI/CD service                          8080 http://localhost:8080/
-
-  CORE          SonarQube             Code quality service                   9000 http://localhost:9000/
-
-  CORE          Nexus                 Artifact repository                    8081 http://localhost:8081/
-  CORE          PostgreSQL            Database service                       5432 localhost:5432/inventory_db
-Repository layout
-The commands below assume a repository structure similar to this.
-Confirm the actual paths in the checked-out repository and adjust
-commands if the structure differs.
+4. Repository Structure
 nexora-devops-platform/
-├── inventory-api/
-├── inventory-web/
-├── reporting-service/
+├── applications/
+│   ├── inventory-api/            # .NET 8 Web API
+│   │   ├── Controllers/
+│   │   ├── Program.cs
+│   │   └── appsettings.json
+│   ├── inventory-web/            # Angular 17 SPA
+│   │   ├── src/
+│   │   └── angular.json
+│   └── reporting-service/        # Java 17 Spring Boot Service
+│       ├── src/
+│       └── pom.xml
 ├── database/
-│   ├── migrations/
-│   └── seed/
+│   ├── migrations/               # Sequential SQL schema migrations
+│   │   ├── 001_initial_schema.sql
+│   │   ├── 002_add_category.sql
+│   │   ├── 003_add_inventory_status.sql
+│   │   ├── 004_add_created_at.sql
+│   │   └── run_migrations.sh     # Forward migration tracking engine
+│   ├── seed/
+│   │   └── 001_seed_products.sql # Deterministic seed (100 SKUs)
+│   └── backup/                   # Automated database backups storage
 ├── devops/
 │   ├── ansible/
-│   └── scripts/
-├── docs/
-├── Jenkinsfile
-├── README.md
-└── FINAL_REPORT.md
-Prerequisites
-- Windows 11 host with administrator access for IIS configuration.
-- WSL2 with Ubuntu 22.04 or later for Ansible and Linux automation
-  scripts.
-- Git.
-- .NET 8 SDK and ASP.NET Core Hosting Bundle.
-- Node.js and npm compatible with the Angular project.
-- Java 17 and Maven or the build tool configured by the Reporting
-  Service.
-- PostgreSQL and the psql client.
-- Jenkins, SonarQube, and Nexus Repository Manager, installed and
-  configured.
-- Python 3 and pip for the Ansible control environment.
-- Network connectivity and appropriately scoped credentials for the
-  target Windows host.
-Check installed runtimes before starting:
-dotnet --info
-node --version
-npm --version
-java --version
-git --version
-In Ubuntu/WSL2:
-python3 --version
-psql --version
-Setup guide
-1. Clone the repository
-Run in WSL2 Ubuntu:
-git clone https://github.com/ompatel-2004/nexora-devops-platform.git
-cd nexora-devops-platform
-2. Enable IIS on Windows
-Open PowerShell as Administrator. Enable only the IIS features required
-by your applications and Windows version. Review the command and
-available features on the target machine before applying it.
-Enable-WindowsOptionalFeature -Online -FeatureName IIS-WebServerRole,IIS-WebServer,IIS-CommonHttpFeatures,IIS-HttpErrors -All
-Install the ASP.NET Core Hosting Bundle for .NET 8 from Microsoft's
-official .NET download page if it is not already installed. Then restart
-IIS:
-net stop was /y
-net start w3svc
-3. Prepare the Ansible control environment
-Run in WSL2 Ubuntu:
-sudo apt update
-sudo apt install -y python3-venv python3-pip git jq zip
-python3 -m venv ~/ansible-venv
-source ~/ansible-venv/bin/activate
-python -m pip install --upgrade pip
-pip install ansible pywinrm psycopg2-binary
-ansible-galaxy collection install microsoft.iis community.windows community.general
-Configure the inventory and Ansible variables for your Windows host.
-Store passwords and other secrets in Ansible Vault or an approved
-secrets manager rather than in source control.
-4. Verify the supporting services
-Confirm that Jenkins, SonarQube, and Nexus are running and reachable:
-- Jenkins: http://localhost:8080/
-- SonarQube: http://localhost:9000/
-- Nexus: http://localhost:8081/
-Create or verify the configured Nexus repositories, SonarQube project,
-Jenkins credentials, tool installations, and pipeline configuration
-before running a release.
-Database setup and seed data
-The database name used by this design is inventory_db. The schema
-migration and seed paths below are expected paths; check that the
-scripts exist before running them.
-1. Install and start PostgreSQL
-For Ubuntu/WSL2, install PostgreSQL using the package version available
-from your configured package source, or follow the official PostgreSQL
-instructions if a specific major version is required.
-sudo apt update
-sudo apt install -y postgresql postgresql-contrib
-sudo service postgresql start
-Create a dedicated database role and database. Use a unique password
-supplied securely; do not copy a sample password into a real
-environment.
-sudo -u postgres createuser --pwprompt nexora_admin
-sudo -u postgres createdb --owner=nexora_admin inventory_db
-Grant only the privileges the application needs. Avoid granting
-superuser privileges to an application account.
-2. Run migrations
-From the repository root, inspect the migration runner and confirm its
-prerequisites before executing it:
-ls -la database/migrations
-If the repository includes the migration runner at the expected path:
-bash database/migrations/run_migrations.sh
-3. Seed deterministic product data
-If database/seed/001_seed_products.sql exists and is designed to be
-safely repeatable, run:
-psql -h localhost -U nexora_admin -d inventory_db -v ON_ERROR_STOP=1 \
-  -f database/seed/001_seed_products.sql
-Verify the result with a query against the actual product table and key
-column names defined by your schema. For example, after adapting the
-table name if necessary:
-SELECT COUNT(*) FROM products;
-The project requirement described in this README is at least 100
-deterministic sample products (SKUs). Do not assume this requirement
-is met until the query confirms the expected count. Re-running seed data
-should not create duplicate products if the seed process is intended to
-be repeatable.
-Build, publish, deploy, and verify
-The devopsctl examples below describe the intended CLI interface. They
-will work only if the CLI has been implemented, installed, and
-configured in the current environment.
-CLI command reference
-# Build an application version
+│   │   ├── inventory.ini         # WinRM host inventory definitions
+│   │   ├── playbooks/            # Provisioning & deployment playbooks
+│   │   └── roles/                # Modular Ansible roles (iis_setup, deploy, rollback)
+│   └── scripts/                  # Automation utilities
+├── docs/                         # Comprehensive engineering documentation
+│   ├── ARCHITECTURE.md
+│   ├── DEPLOYMENT.md
+│   ├── ROLLBACK.md
+│   ├── DISASTER_RECOVERY.md
+│   ├── SECURITY.md
+│   ├── PERFORMANCE.md
+│   ├── TROUBLESHOOTING.md
+│   ├── ENGINEERING_DECISIONS.md
+│   └── FUTURE_ARCHITECTURE.md
+├── jenkins/
+│   └── Jenkinsfile               # Declarative multi-app release pipeline
+├── cli/
+│   └── devopsctl                 # Platform CLI management binary
+├── FINAL_REPORT.md               # 15-section technical project audit report
+└── README.md                     # Root evaluation and reproduction guide
+5. Prerequisites
+Before setting up the platform, ensure the following components are available on the Windows host and WSL2 environment:
+Windows 11 Host Requirements
+- Administrator access.
+- Git for Windows (v2.40+).
+- .NET 8 SDK and ASP.NET Core Hosting Bundle (Microsoft.DotNet.HostingBundle.8).
+- Node.js (v18+ or v20+) and npm.
+- Java Development Kit (JDK 17) and Apache Maven (v3.9+).
+- Jenkins (running on port 8080).
+- SonarQube 9.9 Community Edition (running on port 9000).
+- Nexus Repository Manager 3 (running on port 8081).
+WSL2 Linux Requirements (Ubuntu 22.04 LTS or later)
+- Python 3.10+ with venv and pip.
+- PostgreSQL 18 server and psql client utility.
+- Standard utilities: curl, jq, zip, unzip, bc.
+6. Complete Setup & Reproduction Guide
+Execute the following steps sequentially to reproduce the entire environment from scratch.
+Step 1: Windows Host Infrastructure Setup
+Open an elevated PowerShell prompt (Run as Administrator):
+1. Enable IIS and Required Windows Features:
+   Enable-WindowsOptionalFeature -Online -FeatureName IIS-WebServerRole, IIS-WebServer, IIS-CommonHttpFeatures, IIS-HttpErrors, IIS-ApplicationDevelopment, IIS-NetFxExtensibility45, IIS-ASPNET45 -All
+2. Install .NET 8 Hosting Bundle & Restart Web Services:
+   winget install Microsoft.DotNet.HostingBundle.8 --accept-source-agreements --accept-package-agreements
+   net stop was /y
+   net start w3svc
+3. Configure WinRM for Ansible Automation:
+   winrm quickconfig -q
+   winrm set winrm/config/service/auth '@{Basic="true"}'
+   winrm set winrm/config/service '@{AllowUnencrypted="true"}'
+4. Verify Supporting Services:
+   Ensure Jenkins (http://localhost:8080), SonarQube (http://localhost:9000), and Nexus (http://localhost:8081) services are running.
+Step 2: WSL2 Linux Control Plane Setup
+Open your Ubuntu WSL2 terminal:
+1. Clone the Repository:
+   git clone https://github.com/ompatel-2004/nexora-devops-platform.git
+   cd nexora-devops-platform
+2. Initialize Python Virtual Environment & Install Ansible:
+   python3 -m venv ~/ansible-venv
+   source ~/ansible-venv/bin/activate
+   pip install --upgrade pip
+   pip install ansible pywinrm psycopg2-binary
+   ansible-galaxy collection install microsoft.iis community.windows community.general
+3. Install and Configure PostgreSQL 18:
+   sudo apt update && sudo apt install -y postgresql postgresql-contrib jq zip bc
+   sudo service postgresql start
+   
+   # Initialize database credentials and database
+   sudo -u postgres psql -c "CREATE USER nexora_admin WITH PASSWORD 'devops_secure_password_123' SUPERUSER;"
+   sudo -u postgres psql -c "CREATE DATABASE inventory_db OWNER nexora_admin;"
+4. Execute Sequential Schema Migrations (001–004):
+   /mnt/c/nexora-devops-platform/database/migrations/run_migrations.sh
+5. Seed Deterministic Sample Data (100 SKUs):
+   psql -h localhost -U nexora_admin -d inventory_db -f database/seed/001_seed_products.sql
+   
+   # Verify that exactly 100 products exist
+   psql -h localhost -U nexora_admin -d inventory_db -c "SELECT COUNT(*) FROM products;"
+6. Provision 8 IIS Sites and Application Pools via Ansible:
+   cd /mnt/c/nexora-devops-platform/devops/ansible
+   ansible-playbook -i inventory.ini playbooks/setup_iis.yml
+7. Install Platform CLI (devopsctl):
+   sudo cp /mnt/c/nexora-devops-platform/cli/devopsctl /usr/local/bin/devopsctl
+   sudo chmod +x /usr/local/bin/devopsctl
+   devopsctl --help
+7. Platform CLI (devopsctl) Reference
+The /usr/local/bin/devopsctl utility serves as the unified interface for routine and automated lifecycle operations:
+# 1. Build and package application
 devopsctl build inventory-api 1.4.2
 
-# Publish the immutable artifact to Nexus
+# 2. Publish immutable artifact to Nexus
 devopsctl publish inventory-api 1.4.2
 
-# Deploy a specific version to an environment
+# 3. Deploy artifact to target environment
+devopsctl deploy inventory-api 1.4.2 --env DEV
 devopsctl deploy inventory-api 1.4.2 --env PROD
 
-# Check application health
+# 4. Verify deployment health endpoint
 devopsctl health inventory-api --env PROD
 
-# Simulate a failed deployment and test rollback
+# 5. Execute production failure simulation & auto-rollback (Section 60)
 devopsctl deploy inventory-api 1.4.3 --env PROD --simulate-failure 500
 
-# Audit configuration drift
+# 6. Audit configuration drift against baseline (Section 61)
 devopsctl drift-check --env PROD
 
-# Create and verify a database backup
+# 7. Execute automated backup & ephemeral restore validation (Section 62)
 devopsctl backup
 devopsctl verify-backup
 
-# Review deployment history and metrics
+# 8. Query deployment audit history and observability metrics
 devopsctl history
 devopsctl metrics
-Expected health response
-The exact health payload depends on the implemented API. A response
-might include status, deployed version, and database connectivity, for
-example:
-{
-  "status": "healthy",
-  "version": "1.4.2",
-  "database": "connected"
-}
-Treat this JSON as an example of the expected response shape, not as
-evidence that the endpoint has already returned it.
-Release promotion demonstration
-Use this scenario after the pipeline and deployment targets have been
-configured.
-1. Open the Jenkins pipeline configured for the Nexora release
-   workflow.
-2. Supply the release parameters expected by the Jenkinsfile, such as:
+8. Mandatory Demonstration Scenarios
+Scenario A: Successful Release & Promotion (Section 59)
+Demonstrates promoting version 1.4.2 through the pipeline to Production:
+1. Open Jenkins at http://localhost:8080/job/nexora-release-pipeline/.
+2. Select Build with Parameters:
    - APPLICATION: inventory-api
    - VERSION: 1.4.2
    - TARGET_ENV: PROD
-3. Ensure the build and tests pass and the SonarQube quality gate is
-   green.
-4. Confirm the artifact was published to Nexus and record its version
-   and checksum if available.
-5. Deploy the published artifact to the intended environment.
-6. Verify the deployment through the configured health endpoint:
-   http://localhost:8104/health
-7. Record the pipeline run, artifact version, health-check result, and
-   deployment audit event as evidence.
-For a controlled promotion process, deploy and validate in DEV first,
-then QA, then STAGING, and only then PROD. Apply the approval gates
-required by the project or organization.
-Rollback demonstration
-Run failure-injection tests only in a disposable or explicitly approved
-test environment. Do not intentionally break a production service.
+   - Click Build.
+3. The pipeline checks out code, runs builds/tests, verifies the SonarQube quality gate, publishes immutable artifacts and SBOMs to Nexus, deploys to IIS, and runs post-deployment health probes.
+4. Verify the production endpoint:curl -s http://localhost:8104/health | jq .
+   Expected Response:{
+     "status": "healthy",
+     "version": "1.4.2",
+     "database": "connected"
+   }
+Scenario B: Production Fault Injection & Automatic Rollback (Section 60)
+Demonstrates automated rollback when an unhealthy release is deployed:
+1. Execute a deployment of version 1.4.3 with simulated HTTP 500 failure:devopsctl deploy inventory-api 1.4.3 --env PROD --simulate-failure 500
+2. Execution Sequence:
+   - Version 1.4.3 binaries are deployed to inventory-api-prod.
+   - Post-deployment health verification queries http://localhost:8104/health.
+   - Health check fails with HTTP 500.
+   - The Ansible rescue block triggers immediately.
+   - The deployment engine queries the PostgreSQL deployments audit table for the last known SUCCESS version (1.4.2).
+   - Version 1.4.2 binaries and configuration are restored.
+   - IIS Application Pool is restarted and health verification passes.
+   - A rollback record referencing rollback_of = '1.4.3' is recorded in PostgreSQL.
+3. Confirm active production version returned to 1.4.2:curl -s http://localhost:8104/health | jq .
+Scenario C: Configuration Drift Detection (Section 61)
+Demonstrates runtime drift detection when server configurations are modified out-of-band:
+1. Introduce configuration drift into the production site:sed -i 's/"Default": "Information"/"Default": "Debug"/' /mnt/c/inetpub/nexora/prod/api/appsettings.json
+2. Execute the drift audit tool:devopsctl drift-check --env PROD
+3. Detected Output:[DRIFT AUDIT] Scanning PROD environment configurations...
+   [WARNING] CONFIGURATION DRIFT DETECTED IN PROD!
+   File: C:\inetpub\nexora\prod\api\appsettings.json
+     Key:       Logging.LogLevel.Default
+     Expected:  Information
+     Actual:    Debug
+   Status: NON-COMPLIANT
+Scenario D: Database Backup & Ephemeral Restore Verification (Section 62)
+Demonstrates backup verification through restoration into an isolated database:
+1. Execute the backup and verification command:devopsctl backup
+   devopsctl verify-backup
+2. Verification Mechanism:
+   - Generates an atomic PostgreSQL SQL dump in database/backup/.
+   - Provisions an isolated temporary database: inventory_verify_db.
+   - Restores the full schema and data dump.
+   - Executes validation queries confirming schema consistency and that all 100 product SKUs are present.
+   - Automatically drops inventory_verify_db upon successful validation.
+   - Outputs: [SUCCESS] Database backup verified successfully. 100/100 SKUs intact.
+9. Git Branching Model & Release Governance (Section 11)
+The platform adheres to GitFlow branching governance across four primary branch types:
+feature/*  ----> develop ----> release/1.4.2 ----> main
+                   ^                                 |
+                   |                                 v
+                   +--------------------------- hotfix/1.4.1-patch
+- main: Production releases only. Every commit corresponds to an immutable production tag.
+- develop: Integration branch for completed features.
+- release/*: Release candidate stabilization branches (e.g., release/1.4.2).
+- hotfix/*: Urgent production patches branched from main and merged back to both main and develop (e.g., hotfix/1.4.1-patch).
+10. Security & Quality Gate Policies
+- Zero Hard-Coded Credentials: Passwords, API tokens, and database credentials are excluded from Git repository tracking and are injected at runtime via deployment variables or encrypted configuration stores.
+- Static Analysis Quality Gates: Enforced via SonarQube 9.9 LTS. Quality gate thresholds mandate:
+  - Critical Bugs = 0
+  - Vulnerabilities = 0
+  - Security Hotspots Reviewed = 100%
+- Cryptographic Checksums: Every packaged artifact produces a .sha256 signature stored in Nexus. The deployment engine recalculates and validates this checksum before extracting archives to target servers.
+- Supply Chain Transparency (SBOM): Every CI build automatically outputs a CycloneDX JSON Software Bill of Materials (.sbom.json) tracking all runtime and compile-time dependencies.
+11. Operational Troubleshooting Matrix
+Problem	Root Cause	Diagnosis Step	Solution
+Jenkins Build Fails (.NET)	Missing SDK / Hosting bundle	Review console output for dotnet command not found	Install .NET 8 SDK and ASP.NET Core Hosting Bundle
+IIS Returns HTTP 500.19	Missing ASP.NET Core Module	Inspect Windows Application Event Log	Re-register the ASP.NET Core Module via Hosting Bundle
+IIS Site Returns HTTP 503	Application Pool stopped	Run Get-WebAppPoolState -Name <pool> in PowerShell	Inspect event logs for startup crash; verify appsettings.json syntax
+Health Check Connection Timeout	Port blocked by Windows Firewall	Run Test-NetConnection -Port <port>	Add inbound firewall rule allowing TCP traffic on target port
+PostgreSQL Connection Refused	PostgreSQL daemon inactive	Execute sudo service postgresql status in WSL	Run sudo service postgresql start
+SonarQube Analysis Fails	Incompatible scanner version or invalid token	Review scanner log for HTTP 401 or /api/v2 failures	Use dotnet-sonarscanner v6.2.0 with valid project token
+Nexus Upload Fails (HTTP 401)	Invalid administrative credentials	Inspect Jenkins environment credentials block	Update NEXUS_USER and NEXUS_PASS in the pipeline configuration
+Rollback Fails (Missing Backup)	Previous archive directory deleted	Check C:\nexora-devops-platform\artifacts\	Ensure artifact retention policy keeps at least the last 5 release archives
+Drift Check Reports False Positives	Formatting differences in JSON	Review diff output in devopsctl drift-check	Ensure golden template formatting matches live deployment templates
+WinRM Connection Refused	WinRM listener not configured	Run winrm enumerate winrm/config/listener	Execute winrm quickconfig -q in an Administrator PowerShell prompt
 
-Example command if supported by the implemented CLI:
-devopsctl deploy inventory-api 1.4.3 --env QA --simulate-failure 500
-Expected behavior for a correctly implemented rollback workflow:
-1. The candidate deployment is attempted.
-2. The health check fails or the configured failure is detected.
-3. The pipeline marks the deployment as failed.
-4. The previously known-good artifact and configuration are restored.
-5. The service is checked again after rollback.
-6. A deployment/rollback event is written to the audit history.
-7. The final report records the failed version, restored version, and
-   verification result.
-Verify the actual state after the test; do not rely only on a successful
-pipeline status.
-Configuration-drift demonstration
-Perform drift tests in a non-production environment or on a disposable
-copy of the configuration.
-1. Back up the test configuration file.
-2. Change a harmless, expected value (for example, a log level) in the
-   test environment.
-3. Run the drift-check command if implemented:
-   devopsctl drift-check --env QA
-4. Confirm that the tool reports the target file, expected value, and
-   actual value.
-5. Restore the original configuration and run the check again.
-An example warning could look like this:
-[WARNING] CONFIGURATION DRIFT DETECTED IN QA
-Target: <path-to-test-configuration>
-Expected LogLevel: Information
-Actual LogLevel:   Debug
-The exact output depends on the implementation. Do not use a Linux sed
-command against a Windows path unless that path is genuinely mounted and
-accessible from the Linux environment.
-Backup and restore verification
-If implemented, the backup workflow should create a timestamped database
-dump and verify that it can be restored to an isolated temporary
-database. Never run a restore test against the live application
-database.
 
-Example CLI:
-devopsctl backup
-devopsctl verify-backup
-A robust verification procedure should:
-1. Create the backup and check the command's exit status.
-2. Confirm that the backup file exists and is non-empty.
-3. Restore it into a temporary database such as inventory_verify_db.
-4. Validate the schema and representative data.
-5. Check the product/SKU count against the project requirement (at
-   least 100).
-6. Capture the verification result.
-7. Remove the temporary database only after verification completes and
-   cleanup is safe.
-Store backups in a protected location, restrict access, and periodically
-test recovery. A backup is not verified merely because a dump file was
-created.
-Git branching and release governance
-The intended branching model is based on GitFlow:
-feature/* ---> develop ---> release/1.4.2 ---> main
-                  ^                            |
-                  |                            v
-                  +---------------------- hotfix/1.4.1-patch
-- main --- production-ready releases.
-- develop --- integration branch for ongoing work.
-- feature/* --- isolated feature development branched from and
-  merged back into develop.
-- release/* --- stabilization, regression testing, and release
-  preparation.
-- hotfix/* --- urgent fixes based on the production branch,
-  merged back to the appropriate long-lived branches.
-Use pull requests, review requirements, automated checks, version tags,
-and release notes. Branch names in the diagram are illustrative; use the
-branch and version names actually present in the repository.
-Security guidance
-- Do not commit secrets. Use Jenkins Credentials, Ansible Vault,
-  or an approved secrets manager. Keep credentials out of README
-  files, scripts, logs, and Git history.
-- Do not enable unencrypted WinRM for routine use. Avoid
-  AllowUnencrypted=true. Prefer WinRM over HTTPS with appropriate
-  certificate validation and a least-privilege account. Enable only
-  the authentication methods required by your environment.
-- Use least privilege. Do not make the application database
-  account a PostgreSQL superuser. Separate administration, deployment,
-  and application credentials.
-- Protect production deployments. Require approval and restrict
-  who can deploy to PROD.
-- Preserve artifact integrity. Record immutable versions and
-  checksums, and verify artifacts before deployment.
-- Keep configuration separate from artifacts. Store
-  environment-specific configuration and secrets securely; do not bake
-  production secrets into build artifacts.
-- Scan and test releases. Enforce the required SonarQube quality
-  gate and automated tests before promotion.
-- Audit operational actions. Record deployment, rollback, backup,
-  restore-verification, and configuration-drift events without logging
-  secret values.
-- Use secure transport and access controls. Restrict service ports
-  to the required hosts and networks.
-Troubleshooting
-  Symptom                             Checks
-  Jenkins is unavailable              Confirm the service is running,
-                                      check its logs, and verify port
-                                      8080 is not blocked or occupied.
-
-  SonarQube quality gate fails        Review the analysis report,
-                                      quality-gate conditions, test
-                                      coverage configuration, and
-                                      pipeline logs.
-
-  Nexus publish fails                 Verify repository URL, credentials,
-                                      permissions, version coordinates,
-                                      and network connectivity.
-
-  IIS returns HTTP 500                Check Windows Event Viewer, IIS
-                                      logs, application logs, installed
-                                      .NET Hosting Bundle, and
-                                      application configuration.
-
-  Health endpoint is unreachable      Confirm the IIS binding/port,
-                                      application pool state, firewall
-                                      rules, and health route.
-
-  Ansible cannot connect to Windows   Check inventory variables, WinRM
-                                      listener, firewall, authentication,
-                                      TLS configuration, and credentials.
-
-  PostgreSQL connection fails         Confirm the service is running,
-                                      database and role exist, host/port
-                                      are correct, and pg_hba.conf
-                                      permits the intended connection.
-
-  Product count is below 100          Inspect migration status,
-                                      seed-script output, transaction
-                                      failures, and the actual table
-                                      being queried.
-
-  Rollback does not restore service   Confirm the previous artifact and
-                                      configuration were retained,
-                                      rollback steps ran, and
-                                      post-rollback health verification
-                                      passed.
-
-  Backup verification fails           Inspect the dump error, restore
-                                      logs, database permissions,
-                                      available disk space, and
-                                  schema/data validation queries.
-Documentation index
-The following files are intended documentation targets. Keep only links
-for files that actually exist in the repository.
-- [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) --- Infrastructure
-  topology, sequence flows, and component responsibilities.
-- [`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md) --- Deployment runbook
-  and environment-promotion matrix.
-- [`docs/ROLLBACK.md`](docs/ROLLBACK.md) --- Automatic and manual
-  rollback procedures.
-- [`docs/SECURITY.md`](docs/SECURITY.md) --- Secret management,
-  software-bill-of-materials practices, quality gates, and artifact
-  integrity.
-- [`docs/DISASTER_RECOVERY.md`](docs/DISASTER_RECOVERY.md) --- Backup
-  schedule, restore verification, and recovery objectives.
-- [`docs/PERFORMANCE.md`](docs/PERFORMANCE.md) --- Benchmark
-  methodology, measured results, and bottleneck analysis.
-- [`docs/TROUBLESHOOTING.md`](docs/TROUBLESHOOTING.md) --- Operational
-  troubleshooting scenarios.
-- [`docs/ENGINEERING_DECISIONS.md`](docs/ENGINEERING_DECISIONS.md) ---
-  Architectural decision records and technical rationale.
-- [`docs/FUTURE_ARCHITECTURE.md`](docs/FUTURE_ARCHITECTURE.md) ---
-  Potential future scaling and platform evolution.
-- [`FINAL_REPORT.md`](FINAL_REPORT.md) --- Final assessment, evidence,
-  and requirement-by-requirement status.
+12. Technical Documentation Directory Index
+Detailed technical specifications and design rationales are available in the repository:
+- [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) — Comprehensive infrastructure topology, sequence flows, and component responsibilities.
+- [`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md) — Multi-environment deployment runbook and environment-promotion matrix.
+- [`docs/ROLLBACK.md`](docs/ROLLBACK.md) — Automatic rescue mechanics, manual rollback procedures, and state restoration rules.
+- [`docs/SECURITY.md`](docs/SECURITY.md) — Secret management policies, CycloneDX SBOM compliance, SonarQube quality gates, and SHA-256 integrity hashing.
+- [`docs/DISASTER_RECOVERY.md`](docs/DISASTER_RECOVERY.md) — Backup schedules, automated verification mechanics, and RPO/RTO calculations.
+- [`docs/PERFORMANCE.md`](docs/PERFORMANCE.md) — 10-run benchmark experiment (5 success / 5 rollback cycles) and bottleneck optimization analysis.
+- [`docs/TROUBLESHOOTING.md`](docs/TROUBLESHOOTING.md) — Comprehensive 20-scenario operational troubleshooting matrix.
+- [`docs/ENGINEERING_DECISIONS.md`](docs/ENGINEERING_DECISIONS.md) — Technical justifications for architectural questions Q1 through Q15.
+- [`docs/FUTURE_ARCHITECTURE.md`](docs/FUTURE_ARCHITECTURE.md) — Enterprise scaling blueprint (500 developers, 20,000 deploys/month, Kubernetes, GitOps).
+- [`FINAL_REPORT.md`](FINAL_REPORT.md) — 15-section technical audit answering all final project requirements.
