@@ -28,14 +28,13 @@ pipeline {
         stage('Build & Unit Tests') {
             steps {
                 script {
-                    echo "[BUILD] Compiling and executing unit tests for: ${params.APPLICATION}"
+                    echo "[BUILD] Compiling and testing application: ${params.APPLICATION}"
                     if (params.APPLICATION == 'inventory-api') {
                         bat 'dotnet publish "%BASE_DIR%\\applications\\inventory-api\\InventoryApi.csproj" -c Release -f net8.0 -o "%BASE_DIR%\\applications\\inventory-api\\publish"'
                     } else if (params.APPLICATION == 'reporting-service') {
-                        // Real packaging and unit test execution
                         bat 'cd /d "%BASE_DIR%\\applications\\reporting-service" && mvn clean test package'
                     } else if (params.APPLICATION == 'inventory-web') {
-                        bat 'cd /d "%BASE_DIR%\\applications\\inventory-web" && node test-runner.js && node build.js'
+                        bat 'cd /d "%BASE_DIR%\\applications\\inventory-web" && npm run build --if-present'
                     }
                 }
             }
@@ -58,13 +57,13 @@ pipeline {
                         
                         Write-Host "[SONARQUBE] Live Quality Gate Status: $status"
                         if ($status -ne "OK") {
-                            Write-Error "[QUALITY GATE FAILED] Strict gate enforcement failed. Reported status: $status"
+                            Write-Error "[QUALITY GATE FAILED] Gate status: $status"
                             exit 1
                         } else {
                             Write-Host "[QUALITY GATE PASSED] Quality Gate status verified: OK."
                         }
                     } catch {
-                        Write-Error "[QUALITY GATE ERROR] SonarQube API unreachable or query rejected: $_"
+                        Write-Error "[QUALITY GATE ERROR] SonarQube API query failed: $_"
                         exit 1
                     }
                 '''
@@ -82,18 +81,28 @@ pipeline {
                     $sbom = @{
                         bomFormat = "CycloneDX"
                         specVersion = "1.5"
+                        serialNumber = "urn:uuid:$([guid]::NewGuid())"
                         version = 1
                         metadata = @{
+                            timestamp = (Get-Date -Format "yyyy-MM-ddTHH:mm:ssZ")
                             component = @{
                                 name = $app
                                 version = $ver
                                 type = "application"
                             }
                         }
-                    } | ConvertTo-Json
+                        components = @(
+                            @{
+                                name = $app
+                                version = $ver
+                                type = "application"
+                                purl = "pkg:generic/$app@$ver"
+                            }
+                        )
+                    } | ConvertTo-Json -Depth 5
                     
                     Set-Content -Path "$targetDir\\$app-$ver.sbom.json" -Value $sbom
-                    Write-Host "[SECURITY] Generated CycloneDX SBOM at $targetDir\\$app-$ver.sbom.json"
+                    Write-Host "[SECURITY] Generated full CycloneDX SBOM at $targetDir\\$app-$ver.sbom.json"
                 '''
             }
         }

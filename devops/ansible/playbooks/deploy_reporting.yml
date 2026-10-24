@@ -1,0 +1,27 @@
+---
+- name: Deploy Nexora Reporting Service
+  hosts: windows
+  vars:
+    app_name: "reporting-service"
+    app_version: "{{ version | default('1.4.2') }}"
+    target_env: "{{ env | default('dev') | lower }}"
+    deploy_dir: "C:\\nexora-devops-platform\\deployments\\reporting-service\\{{ target_env }}"
+  tasks:
+    - name: Ensure deployment directory exists
+      ansible.windows.win_file:
+        path: "{{ deploy_dir }}"
+        state: directory
+
+    - name: Copy Reporting Service JAR artifact
+      ansible.windows.win_copy:
+        src: "C:/nexora-devops-platform/artifacts/reporting-service/reporting-service-{{ app_version }}.jar"
+        dest: "{{ deploy_dir }}\\reporting-service.jar"
+        remote_src: yes
+
+    - name: Stop existing service instance if running
+      ansible.windows.win_shell: |
+        Get-Process java -ErrorAction SilentlyContinue | Where-Object { $_.CommandLine -like "*reporting-service.jar*" } | Stop-Process -Force -ErrorAction SilentlyContinue
+
+    - name: Start Reporting Service daemon
+      ansible.windows.win_shell: |
+        Start-Process java -ArgumentList "-jar", "{{ deploy_dir }}\\reporting-service.jar", "--server.port=8301" -WindowStyle Hidden

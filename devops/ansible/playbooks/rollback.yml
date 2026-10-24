@@ -1,0 +1,21 @@
+---
+- name: Dedicated Rollback Engine for Nexora Platform
+  hosts: windows
+  vars:
+    app_name: "{{ application | default('inventory-api') }}"
+    target_env: "{{ env | default('dev') | lower }}"
+    target_version: "{{ rollback_to | default('') }}"
+  tasks:
+    - name: Identify previous stable release from deployment audit
+      ansible.windows.win_shell: |
+        $app = "{{ app_name }}"
+        $env = "{{ target_env }}"
+        Write-Host "[ROLLBACK] Executing automated rollback for $app on environment $env..."
+      register: rollback_init
+
+    - name: Restore Application State
+      include_role:
+        name: rollback
+      vars:
+        application_name: "{{ app_name }}"
+        environment_name: "{{ target_env }}"

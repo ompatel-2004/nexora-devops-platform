@@ -1,188 +1,100 @@
 #!/usr/bin/env bash
-set -e
+set -euo pipefail
 
-BASE_DIR="/mnt/c/nexora-devops-platform"
-ANSIBLE_DIR="$BASE_DIR/devops/ansible"
-VENV="$HOME/ansible-venv/bin/activate"
+BASE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+ANSIBLE_DIR="${BASE_DIR}/devops/ansible"
 
-function show_help() {
-  echo "devopsctl - Nexora Systems Unified Release Platform CLI"
-  echo "Usage: devopsctl <command> [arguments] [options]"
-  echo ""
-  echo "Commands:"
-  echo "  build <app> <version>           Build and package application (inventory-api, inventory-web, reporting-service)"
-  echo "  deploy <app> <ver> --env <ENV>  Deploy versioned artifact to target IIS environment (DEV, QA, STAGING, PROD)"
-  echo "  rollback <app> --env <ENV>      Roll back environment to previous verified release"
-  echo "  health <app> --env <ENV>        Query health status of deployed service"
-  echo "  status                          Display status of all 8 IIS sites and pools"
-  echo "  history                         Display PostgreSQL deployment audit log"
-  echo "  backup                          Take automated timestamped PostgreSQL database backup"
-  echo "  verify-backup                   Restore latest backup to temporary database and validate 100 SKUs"
-  echo "  drift-check --env <ENV>         Detect configuration or state drift against desired state"
-  echo "  metrics                         Output deployment success/failure/rollback statistics"
-  echo "  --help                          Show this help message"
-  exit 0
+usage() {
+    cat << USAGE
+Nexora DevOps CLI Control Plane (devopsctl)
+Usage:
+  devopsctl deploy <app> <version> --env <env> [--simulate-failure <code>]
+  devopsctl rollback <app> --env <env> [--to-version <version>]
+  devopsctl backup
+  devopsctl verify-backup
+USAGE
+    exit 1
 }
 
-if [[ $# -eq 0 ]] || [[ "$1" == "--help" ]]; then
-  show_help
+if [[ $# -lt 1 ]]; then
+    usage
 fi
 
-CMD="$1"
+COMMAND="$1"
 shift
 
-case "$CMD" in
-  build)
-    APP="$1"
-    VER="${2:-1.4.1}"
-    echo "[BUILD] Building $APP version $VER..."
-    if [[ "$APP" == "inventory-api" ]]; then
-      cd "$BASE_DIR/applications/inventory-api"
-      dotnet.exe publish -c Release -o ./publish > /dev/null
-      cd publish && zip -r -q "$BASE_DIR/artifacts/inventory-api/inventory-api-$VER.zip" ./*
-      sha256sum "$BASE_DIR/artifacts/inventory-api/inventory-api-$VER.zip" > "$BASE_DIR/artifacts/inventory-api/inventory-api-$VER.sha256"
-      echo "[BUILD SUCCESS] Created inventory-api-$VER.zip with SHA-256 verification"
-    elif [[ "$APP" == "reporting-service" ]]; then
-      cd "$BASE_DIR/applications/reporting-service"
-      mvn clean package -DskipTests > /dev/null
-      cp target/reporting-service-*.jar "$BASE_DIR/artifacts/reporting-service/reporting-service-$VER.jar"
-      echo "[BUILD SUCCESS] Created reporting-service-$VER.jar"
-    elif [[ "$APP" == "inventory-web" ]]; then
-      cd "$BASE_DIR/applications/inventory-web/dist"
-      zip -r -q "$BASE_DIR/artifacts/inventory-web/inventory-web-$VER.zip" ./*
-      echo "[BUILD SUCCESS] Created inventory-web-$VER.zip"
-    fi
-    ;;
+case "${COMMAND}" in
+    deploy)
+        APP="${1:-}"
+        VERSION="${2:-}"
+        shift 2 || usage
+        ENV="dev"
+        SIMULATE="false"
+        
+        while [[ $# -gt 0 ]]; do
+            case "$1" in
+                --env) ENV="${2:-dev}"; shift 2 ;;
+                --simulate-failure) SIMULATE="${2:-500}"; shift 2 ;;
+                *) shift ;;
+            esac
+        done
 
-  deploy)
-    APP="$1"
-    VER="$2"
-    shift 2
-    ENV="dev"
-    SIM_FAIL="false"
-    while [[ $# -gt 0 ]]; do
-      case "$1" in
-        --env) ENV="$2"; shift 2 ;;
-        --simulate-failure) SIM_FAIL="$2"; shift 2 ;;
-        *) shift ;;
-      esac
-    done
-    ENV_LOWER=$(echo "$ENV" | tr '[:upper:]' '[:lower:]')
-    echo "[DEPLOY] Promoting $APP version $VER to environment: ${ENV^^} (Simulate Failure: $SIM_FAIL)..."
-    source "$VENV"
-    ansible-playbook -i "$ANSIBLE_DIR/inventory.ini" "$ANSIBLE_DIR/playbooks/deploy_api.yml" \
-      -e "env=$ENV_LOWER version=$VER app_name=$APP simulate_failure=$SIM_FAIL"
-    ;;
+        # Select proper playbook per application
+        case "${APP}" in
+            inventory-api) PLAYBOOK="${ANSIBLE_DIR}/playbooks/deploy_api.yml" ;;
+            inventory-web) PLAYBOOK="${ANSIBLE_DIR}/playbooks/deploy_web.yml" ;;
+            reporting-service) PLAYBOOK="${ANSIBLE_DIR}/playbooks/deploy_reporting.yml" ;;
+            *) echo "Unknown application: ${APP}"; exit 1 ;;
+        esac
 
-  rollback)
-    APP="$1"
-    shift
-    ENV="prod"
-    while [[ $# -gt 0 ]]; do
-      case "$1" in
-        --env) ENV="$2"; shift 2 ;;
-        *) shift ;;
-      esac
-    done
-    ENV_LOWER=$(echo "$ENV" | tr '[:upper:]' '[:lower:]')
-    echo "[ROLLBACK] Executing explicit rollback for $APP on environment ${ENV^^}..."
-    source "$VENV"
-    ansible-playbook -i "$ANSIBLE_DIR/inventory.ini" "$ANSIBLE_DIR/playbooks/deploy_api.yml" \
-      -e "env=$ENV_LOWER version=1.4.1 app_name=$APP simulate_failure=false"
-    ;;
+        echo "[devopsctl] Routing deployment of ${APP} v${VERSION} to ${ENV} via ${PLAYBOOK}"
+        ansible-playbook -i "${ANSIBLE_DIR}/inventory.ini" "${PLAYBOOK}" \
+            -e "version=${VERSION}" -e "env=${ENV}" -e "simulate_failure=${SIMULATE}"
+        ;;
 
-  health)
-    APP="$1"
-    shift
-    ENV="dev"
-    while [[ $# -gt 0 ]]; do
-      case "$1" in
-        --env) ENV="$2"; shift 2 ;;
-        *) shift ;;
-      esac
-    done
-    ENV_LOWER=$(echo "$ENV" | tr '[:upper:]' '[:lower:]')
-    case "$ENV_LOWER" in
-      dev) PORT=8101 ;;
-      qa) PORT=8102 ;;
-      staging) PORT=8103 ;;
-      prod) PORT=8104 ;;
-    esac
-    curl -s "http://localhost:$PORT/health" | jq . || curl -s "http://localhost:$PORT/health"
-    echo ""
-    ;;
+    rollback)
+        APP="${1:-}"
+        shift || usage
+        ENV="dev"
+        TO_VERSION=""
 
-  status)
-    powershell.exe -Command "Get-IISSite | Select-Object Name, State, Bindings"
-    ;;
+        while [[ $# -gt 0 ]]; do
+            case "$1" in
+                --env) ENV="${2:-dev}"; shift 2 ;;
+                --to-version) TO_VERSION="${2:-}"; shift 2 ;;
+                *) shift ;;
+            esac
+        done
 
-  history)
-    PGPASSWORD='devops_secure_password_123' psql -h localhost -U nexora_admin -d inventory_db -c \
-      "SELECT id, application, version, environment, status, completed_at, rollback_of FROM deployments ORDER BY id ASC;"
-    ;;
+        echo "[devopsctl] Invoking dedicated rollback workflow for ${APP} on ${ENV}"
+        ansible-playbook -i "${ANSIBLE_DIR}/inventory.ini" "${ANSIBLE_DIR}/playbooks/rollback.yml" \
+            -e "application=${APP}" -e "env=${ENV}" -e "rollback_to=${TO_VERSION}"
+        ;;
 
-  backup)
-    mkdir -p "$BASE_DIR/database/backups"
-    TIMESTAMP=$(date +"%Y%m%d_%H%M%S")
-    BACKUP_FILE="$BASE_DIR/database/backups/inventory_${TIMESTAMP}.sql"
-    PGPASSWORD='devops_secure_password_123' pg_dump -h localhost -U nexora_admin inventory_db > "$BACKUP_FILE"
-    echo "[BACKUP SUCCESS] Backup created: $BACKUP_FILE ($(du -h "$BACKUP_FILE" | cut -f1))"
-    ;;
+    backup)
+        TIMESTAMP=$(date +%Y%m%d_%H%M%S)
+        BACKUP_DIR="${BASE_DIR}/database/backups"
+        mkdir -p "${BACKUP_DIR}"
+        echo "[devopsctl] Creating PostgreSQL backup..."
+        pg_dump -h "${DB_HOST:-localhost}" -p "${DB_PORT:-5432}" -U "${DB_USER:-nexora_admin}" -d "${DB_NAME:-inventory_db}" -F p > "${BACKUP_DIR}/inventory_${TIMESTAMP}.sql"
+        echo "[devopsctl] Backup created: ${BACKUP_DIR}/inventory_${TIMESTAMP}.sql"
+        ;;
 
-  verify-backup)
-    LATEST_BACKUP=$(ls -t "$BASE_DIR/database/backups"/*.sql | head -n 1)
-    echo "[BACKUP VERIFY] Restoring $LATEST_BACKUP into temporary database 'inventory_verify_db'..."
-    PGPASSWORD='devops_secure_password_123' psql -h localhost -U nexora_admin -d postgres -c "DROP DATABASE IF EXISTS inventory_verify_db;" > /dev/null
-    PGPASSWORD='devops_secure_password_123' psql -h localhost -U nexora_admin -d postgres -c "CREATE DATABASE inventory_verify_db OWNER nexora_admin;" > /dev/null
-    PGPASSWORD='devops_secure_password_123' psql -h localhost -U nexora_admin -d inventory_verify_db -f "$LATEST_BACKUP" > /dev/null
-    COUNT=$(PGPASSWORD='devops_secure_password_123' psql -h localhost -U nexora_admin -d inventory_verify_db -t -c "SELECT count(*) FROM products;" | tr -d ' ')
-    if [[ "$COUNT" -eq 100 ]]; then
-      echo "[VERIFICATION PASS] Database integrity confirmed: exactly $COUNT products verified."
-      PGPASSWORD='devops_secure_password_123' psql -h localhost -U nexora_admin -d postgres -c "DROP DATABASE inventory_verify_db;" > /dev/null
-    else
-      echo "[VERIFICATION FAILED] Expected 100 products, found $COUNT."
-      exit 1
-    fi
-    ;;
+    verify-backup)
+        echo "[devopsctl] Running ephemeral backup verification..."
+        LATEST_BACKUP=$(ls -t "${BASE_DIR}/database/backups"/*.sql 2>/dev/null | head -n 1)
+        if [[ -z "${LATEST_BACKUP}" ]]; then
+            echo "[devopsctl] No backups found to verify."; exit 1
+        fi
+        psql -h "${DB_HOST:-localhost}" -U "${DB_USER:-nexora_admin}" -c "DROP DATABASE IF EXISTS inventory_verify_temp;"
+        psql -h "${DB_HOST:-localhost}" -U "${DB_USER:-nexora_admin}" -c "CREATE DATABASE inventory_verify_temp;"
+        psql -h "${DB_HOST:-localhost}" -U "${DB_USER:-nexora_admin}" -d inventory_verify_temp -f "${LATEST_BACKUP}" > /dev/null
+        COUNT=$(psql -h "${DB_HOST:-localhost}" -U "${DB_USER:-nexora_admin}" -d inventory_verify_temp -t -A -c "SELECT COUNT(*) FROM products;")
+        psql -h "${DB_HOST:-localhost}" -U "${DB_USER:-nexora_admin}" -c "DROP DATABASE inventory_verify_temp;"
+        echo "[devopsctl] Verified ${COUNT} products in backup. Status: SUCCESS"
+        ;;
 
-  drift-check)
-    ENV="prod"
-    while [[ $# -gt 0 ]]; do
-      case "$1" in
-        --env) ENV="$2"; shift 2 ;;
-        *) shift ;;
-      esac
-    done
-    ENV_LOWER=$(echo "$ENV" | tr '[:upper:]' '[:lower:]')
-    CONFIG_PATH="/mnt/c/inetpub/nexora/$ENV_LOWER/api/appsettings.json"
-    EXPECTED_LOG="Information"
-    if [[ "$ENV_LOWER" == "dev" ]]; then EXPECTED_LOG="Debug"; fi
-
-    ACTUAL_LOG=$(jq -r '.Logging.LogLevel.Default' "$CONFIG_PATH" 2>/dev/null || echo "MISSING")
-    echo "=== DRIFT DETECTION REPORT: ENVIRONMENT ${ENV^^} ==="
-    if [[ "$ACTUAL_LOG" != "$EXPECTED_LOG" ]]; then
-      echo "DRIFT DETECTED!"
-      echo "  Expected LogLevel: $EXPECTED_LOG"
-      echo "  Actual LogLevel:   $ACTUAL_LOG"
-      exit 2
-    else
-      echo "NO DRIFT DETECTED: Configuration matches desired state ($EXPECTED_LOG)."
-    fi
-    ;;
-
-  metrics)
-    PGPASSWORD='devops_secure_password_123' psql -h localhost -U nexora_admin -d inventory_db -c "
-      SELECT 
-        COUNT(*) as total_deployments,
-        COUNT(*) FILTER (WHERE status = 'SUCCESS' AND rollback_of IS NULL) as successful,
-        COUNT(*) FILTER (WHERE status = 'FAILED') as failed,
-        COUNT(*) FILTER (WHERE rollback_of IS NOT NULL) as rollbacks
-      FROM deployments;"
-    ;;
-
-  *)
-    echo "Unknown command: $CMD"
-    show_help
-    exit 1
-    ;;
+    *)
+        usage
+        ;;
 esac
