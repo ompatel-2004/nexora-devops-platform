@@ -5,7 +5,7 @@ pipeline {
         choice(name: 'APPLICATION', choices: ['inventory-api', 'inventory-web', 'reporting-service'], description: 'Application to release')
         string(name: 'VERSION', defaultValue: '1.4.2', description: 'Semantic Release Version')
         choice(name: 'TARGET_ENV', choices: ['DEV', 'QA', 'STAGING', 'PROD'], description: 'Target Deployment Environment')
-        booleanParam(name: 'AUTO_APPROVE', defaultValue: true, description: 'Bypass manual gate for automated verification')
+        booleanParam(name: 'AUTO_APPROVE', defaultValue: false, description: 'Allow automated deployment without manual approval')
         string(name: 'SIMULATE_FAILURE', defaultValue: 'false', description: 'Inject fault for failure testing (e.g., 500)')
     }
 
@@ -177,21 +177,38 @@ pipeline {
                     }
 
                     if (Test-Path $packageFile) {
-                        $hash = (Get-FileHash -Path $packageFile -Algorithm SHA256).Hash
-                        Set-Content -Path "$artifactDir\\$app-$ver.sha256" -Value $hash
-                        Write-Host "[PACKAGE] Packaged $packageFile (SHA256: $hash)"
+                        $localHash = (Get-FileHash -Path $packageFile -Algorithm SHA256).Hash
+                        Set-Content -Path "$artifactDir\\$app-$ver.sha256" -Value $localHash
+                        Write-Host "[PACKAGE] Packaged $packageFile (SHA256: $localHash)"
 
                         $fileName = [System.IO.Path]::GetFileName($packageFile)
                         $nexusUri = "$env:NEXUS_URL/$app/$ver/$fileName"
                         Write-Host "[NEXUS] Publishing artifact to $nexusUri..."
+                        $auth = [Convert]::ToBase64String([Text.Encoding]::ASCII.GetBytes("$($env:NEXUS_CREDS_USR):$($env:NEXUS_CREDS_PSW)"))
+                        $headers = @{ Authorization = "Basic $auth" }
+
                         try {
-                            $auth = [Convert]::ToBase64String([Text.Encoding]::ASCII.GetBytes("$($env:NEXUS_CREDS_USR):$($env:NEXUS_CREDS_PSW)"))
-                            $headers = @{ Authorization = "Basic $auth" }
                             Invoke-RestMethod -Uri $nexusUri -Method Put -InFile $packageFile -Headers $headers
                             Write-Host "[NEXUS UPLOAD SUCCESS] Artifact uploaded successfully."
                         } catch {
                             if ($_.Exception.Response.StatusCode.value__ -eq 400) {
-                                Write-Host "[NEXUS IMMUTABILITY] Version $ver already published in Nexus repository."
+                                Write-Host "[NEXUS CHECK] Artifact exists on Nexus. Verifying checksum integrity..."
+                                $tempDownload = "$artifactDir\\temp-nexus-check-$fileName"
+                                try {
+                                    Invoke-RestMethod -Uri $nexusUri -Method Get -Headers $headers -OutFile $tempDownload
+                                    $remoteHash = (Get-FileHash -Path $tempDownload -Algorithm SHA256).Hash
+                                    Remove-Item $tempDownload -Force -ErrorAction SilentlyContinue
+
+                                    if ($remoteHash -eq $localHash) {
+                                        Write-Host "[NEXUS INTEGRITY VERIFIED] Existing Nexus artifact matches build checksum ($remoteHash). Reusable."
+                                    } else {
+                                        Write-Error "[NEXUS CHECKSUM MISMATCH] Local hash ($localHash) differs from remote ($remoteHash). Release rejected."
+                                        exit 1
+                                    }
+                                } catch {
+                                    Write-Error "[NEXUS VERIFY ERROR] Unable to retrieve existing artifact to verify checksum: $_"
+                                    exit 1
+                                }
                             } else {
                                 Write-Error "[NEXUS UPLOAD FAILED] $_"
                                 exit 1
@@ -202,6 +219,15 @@ pipeline {
                         exit 1
                     }
                 '''
+            }
+        }
+
+        stage('Manual Approval Gate') {
+            when {
+                expression { return params.AUTO_APPROVE != true && params.TARGET_ENV != 'DEV' }
+            }
+            steps {
+                input message: "Approve deployment of ${params.APPLICATION} v${params.VERSION} to ${params.TARGET_ENV}?"
             }
         }
 
