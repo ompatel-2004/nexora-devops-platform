@@ -15,9 +15,10 @@
     .card { background: white; padding: 1.5rem; border-radius: 0.5rem; border: 1px solid #e2e8f0; box-shadow: 0 1px 3px rgba(0,0,0,0.05); }
     .card h3 { margin: 0; font-size: 0.875rem; color: #64748b; text-transform: uppercase; }
     .card p { margin: 0.5rem 0 0; font-size: 2rem; font-weight: 700; color: #0f172a; }
-    table { width: 100%; border-collapse: collapse; background: white; border-radius: 0.5rem; overflow: hidden; border: 1px solid #e2e8f0; }
+    .table-container { max-height: 600px; overflow-y: auto; background: white; border-radius: 0.5rem; border: 1px solid #e2e8f0; }
+    table { width: 100%; border-collapse: collapse; }
     th, td { padding: 0.75rem 1rem; text-align: left; border-bottom: 1px solid #e2e8f0; }
-    th { background: #f1f5f9; color: #475569; font-size: 0.875rem; }
+    th { background: #f1f5f9; color: #475569; font-size: 0.875rem; position: sticky; top: 0; z-index: 10; }
   </style>
 </head>
 <body>
@@ -28,17 +29,19 @@
   <div class="container">
     <div class="grid">
       <div class="card"><h3>Total Products</h3><p id="total-count">100</p></div>
-      <div class="card"><h3>Available Products</h3><p id="available-count" style="color: #16a34a;">96</p></div>
-      <div class="card"><h3>Out of Stock</h3><p id="out-count" style="color: #dc2626;">4</p></div>
+      <div class="card"><h3>Available Products</h3><p id="available-count" style="color: #16a34a;">100</p></div>
+      <div class="card"><h3>Out of Stock</h3><p id="out-count" style="color: #dc2626;">0</p></div>
     </div>
-    <table>
-      <thead>
-        <tr><th>ID</th><th>SKU</th><th>Product Name</th><th>Category</th><th>Price</th><th>Quantity</th><th>Status</th></tr>
-      </thead>
-      <tbody id="product-tbody">
-        <tr><td>101</td><td>LAP-001</td><td>Engineering Laptop Pro</td><td>Hardware</td><td>₹74,999</td><td>18</td><td><span style="color:#16a34a;">In Stock</span></td></tr>
-      </tbody>
-    </table>
+    <div class="table-container">
+      <table>
+        <thead>
+          <tr><th>ID</th><th>SKU</th><th>Product Name</th><th>Category</th><th>Price</th><th>Quantity</th><th>Status</th></tr>
+        </thead>
+        <tbody id="product-tbody">
+          <tr><td colspan="7">Loading inventory from PostgreSQL API...</td></tr>
+        </tbody>
+      </table>
+    </div>
   </div>
   <script>
     const env = window.__env || { apiUrl: 'http://localhost:8101', environmentName: 'DEV' };
@@ -48,13 +51,19 @@
       .then(data => {
         if (Array.isArray(data) && data.length > 0) {
           document.getElementById('total-count').innerText = data.length;
+          let availableCount = 0;
+          let outCount = 0;
           const tbody = document.getElementById('product-tbody');
           tbody.innerHTML = '';
-          data.slice(0, 10).forEach(p => {
+          data.forEach(p => {
+            const isAvail = (p.available !== undefined) ? p.available : p.Available;
+            if (isAvail) availableCount++; else outCount++;
             const tr = document.createElement('tr');
-            tr.innerHTML = `<td>${p.id || p.Id}</td><td>${p.sku || p.Sku}</td><td>${p.name || p.Name}</td><td>${p.category || p.Category}</td><td>₹${p.price || p.Price}</td><td>${p.quantity || p.Quantity}</td><td><span style="color:${(p.available || p.Available) ? '#16a34a' : '#dc2626'};">${(p.available || p.Available) ? 'In Stock' : 'Out of Stock'}</span></td>`;
+            tr.innerHTML = `<td>${p.id || p.Id}</td><td>${p.sku || p.Sku}</td><td>${p.name || p.Name}</td><td>${p.category || p.Category}</td><td>₹${(p.price || p.Price).toLocaleString()}</td><td>${p.quantity || p.Quantity}</td><td><span style="color:${isAvail ? '#16a34a' : '#dc2626'}; font-weight:600;">${isAvail ? 'In Stock' : 'Out of Stock'}</span></td>`;
             tbody.appendChild(tr);
           });
+          document.getElementById('available-count').innerText = availableCount;
+          document.getElementById('out-count').innerText = outCount;
         }
       }).catch(err => console.log('Loaded static preview. API reachable on configured port.'));
   </script>
