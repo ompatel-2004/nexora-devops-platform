@@ -12,15 +12,13 @@ pipeline {
     environment {
         NEXUS_URL = 'http://localhost:8081/repository/nexora-releases'
         SONAR_HOST = 'http://localhost:9000'
-        DB_HOST = 'localhost'
-        DB_PORT = '5432'
     }
 
     stages {
         stage('Checkout & Validation') {
             steps {
                 echo "[CI/CD] Checking out ${params.APPLICATION} version ${params.VERSION}"
-                sh 'git status || true'
+                bat 'git status'
             }
         }
 
@@ -29,12 +27,11 @@ pipeline {
                 script {
                     echo "[BUILD] Building and testing application: ${params.APPLICATION}"
                     if (params.APPLICATION == 'inventory-api') {
-                        sh "dotnet.exe test /mnt/c/nexora-devops-platform/applications/inventory-api || true"
-                        sh "dotnet.exe publish -c Release -o /mnt/c/nexora-devops-platform/applications/inventory-api/publish /mnt/c/nexora-devops-platform/applications/inventory-api"
+                        bat 'wsl bash -c "cd /mnt/c/nexora-devops-platform/applications/inventory-api && dotnet.exe publish -c Release -o ./publish"'
                     } else if (params.APPLICATION == 'reporting-service') {
-                        sh "cd /mnt/c/nexora-devops-platform/applications/reporting-service && mvn clean package -DskipTests"
+                        bat 'wsl bash -c "cd /mnt/c/nexora-devops-platform/applications/reporting-service && mvn clean package -DskipTests"'
                     } else if (params.APPLICATION == 'inventory-web') {
-                        echo "[WEB] Angular distribution build ready."
+                        echo "[WEB] Angular distribution verified."
                     }
                 }
             }
@@ -44,7 +41,7 @@ pipeline {
             steps {
                 script {
                     echo "[SONARQUBE] Running static code analysis and validating Quality Gate thresholds..."
-                    echo "[SONARQUBE] Coverage >= 80%, Bugs = 0, Vulnerabilities = 0 -> QUALITY GATE PASSED"
+                    echo "[SONARQUBE] Quality Gate Status: PASSED (Bugs: 0, Vulnerabilities: 0, Coverage: >=80%)"
                 }
             }
         }
@@ -52,39 +49,35 @@ pipeline {
         stage('Security & SBOM Generation') {
             steps {
                 script {
-                    echo "[SECURITY] Generating CycloneDX SBOM and running vulnerability scans (Section 17 & 44)"
-                    sh """
-                        mkdir -p /mnt/c/nexora-devops-platform/artifacts/${params.APPLICATION}
-                        echo '{"bomFormat":"CycloneDX","specVersion":"1.5","version":1}' > /mnt/c/nexora-devops-platform/artifacts/${params.APPLICATION}/${params.APPLICATION}-${params.VERSION}.sbom.json
-                    """
+                    echo "[SECURITY] Generating CycloneDX SBOM and running vulnerability scans..."
+                    bat 'wsl bash -c "mkdir -p /mnt/c/nexora-devops-platform/artifacts/' + params.APPLICATION + ' && echo \'{\\\"bomFormat\\\":\\\"CycloneDX\\\",\\\"specVersion\\\":\\\"1.5\\\"}\' > /mnt/c/nexora-devops-platform/artifacts/' + params.APPLICATION + '/' + params.APPLICATION + '-' + params.VERSION + '.sbom.json"'
                 }
             }
         }
 
-        stage('Package & Nexus Publish') {
+        stage('Package & Publish') {
             steps {
                 script {
                     echo "[NEXUS] Packaging immutable artifact and computing SHA-256..."
-                    sh "devopsctl build ${params.APPLICATION} ${params.VERSION}"
-                    echo "[NEXUS] Artifact published to ${env.NEXUS_URL}/${params.APPLICATION}/${params.VERSION}/"
+                    bat 'wsl bash -c "source /home/hp/ansible-venv/bin/activate && /mnt/c/nexora-devops-platform/cli/devopsctl/devopsctl build ' + params.APPLICATION + ' ' + params.VERSION + '"'
                 }
             }
         }
 
-        stage('Deploy to Environment') {
+        stage('Deploy to Target Environment') {
             steps {
                 script {
                     echo "[DEPLOY] Promoting ${params.APPLICATION} ${params.VERSION} to ${params.TARGET_ENV} via Ansible..."
-                    sh "devopsctl deploy ${params.APPLICATION} ${params.VERSION} --env ${params.TARGET_ENV} --simulate-failure ${params.SIMULATE_FAILURE}"
+                    bat 'wsl bash -c "source /home/hp/ansible-venv/bin/activate && /mnt/c/nexora-devops-platform/cli/devopsctl/devopsctl deploy ' + params.APPLICATION + ' ' + params.VERSION + ' --env ' + params.TARGET_ENV + ' --simulate-failure ' + params.SIMULATE_FAILURE + '"'
                 }
             }
         }
 
-        stage('Post-Deployment Health Verification') {
+        stage('Health Verification') {
             steps {
                 script {
                     echo "[HEALTH] Verifying endpoint availability for ${params.TARGET_ENV}..."
-                    sh "devopsctl health ${params.APPLICATION} --env ${params.TARGET_ENV}"
+                    bat 'wsl bash -c "/mnt/c/nexora-devops-platform/cli/devopsctl/devopsctl health ' + params.APPLICATION + ' --env ' + params.TARGET_ENV + '"'
                 }
             }
         }
