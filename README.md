@@ -247,7 +247,7 @@ Open your **Ubuntu WSL2** terminal:
    ```bash
    sudo apt update && sudo apt install -y postgresql postgresql-contrib jq zip bc
    sudo service postgresql start
-   sudo -u postgres psql -c "CREATE USER nexora_admin WITH PASSWORD '${DB_PASSWORD}' NONONONOSUPERUSER NOCREATEDB NOCREATEROLE NOCREATEDB NOCREATEROLE NOCREATEDB NOCREATEROLE NOCREATEDB NOCREATEROLE;"
+   sudo -u postgres psql -c "CREATE USER nexora_admin WITH PASSWORD '' NOSUPERUSER NOCREATEDB NOCREATEROLE;"
    sudo -u postgres psql -c "CREATE DATABASE inventory_db OWNER nexora_admin;"
    ```
 

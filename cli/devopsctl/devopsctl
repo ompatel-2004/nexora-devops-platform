@@ -87,11 +87,11 @@ case "${COMMAND}" in
         fi
         
         # Connect to maintenance database 'postgres' to avoid dropping the active database
-        psql -h "${DB_HOST:-localhost}" -p "${DB_PORT:-5432}" -U "${DB_USER:-nexora_admin}" -d postgres -c "DROP DATABASE IF EXISTS inventory_verify_temp;"
-        psql -h "${DB_HOST:-localhost}" -p "${DB_PORT:-5432}" -U "${DB_USER:-nexora_admin}" -d postgres -c "CREATE DATABASE inventory_verify_temp;"
+        psql -h "${DB_HOST:-localhost}" -p "${DB_PORT:-5432}" -U "${DB_ADMIN_USER:-postgres}" -d postgres -c "DROP DATABASE IF EXISTS inventory_verify_temp;"
+        psql -h "${DB_HOST:-localhost}" -p "${DB_PORT:-5432}" -U "${DB_ADMIN_USER:-postgres}" -d postgres -c "CREATE DATABASE inventory_verify_temp;"
         psql -h "${DB_HOST:-localhost}" -p "${DB_PORT:-5432}" -U "${DB_USER:-nexora_admin}" -d inventory_verify_temp -f "${LATEST_BACKUP}" > /dev/null
         COUNT=$(psql -h "${DB_HOST:-localhost}" -p "${DB_PORT:-5432}" -U "${DB_USER:-nexora_admin}" -d inventory_verify_temp -t -A -c "SELECT COUNT(*) FROM products;")
-        psql -h "${DB_HOST:-localhost}" -p "${DB_PORT:-5432}" -U "${DB_USER:-nexora_admin}" -d postgres -c "DROP DATABASE inventory_verify_temp;"
+        psql -h "${DB_HOST:-localhost}" -p "${DB_PORT:-5432}" -U "${DB_ADMIN_USER:-postgres}" -d postgres -c "DROP DATABASE inventory_verify_temp;"
         echo "[devopsctl] Verified ${COUNT} products in backup. Status: SUCCESS"
         ;;
 
