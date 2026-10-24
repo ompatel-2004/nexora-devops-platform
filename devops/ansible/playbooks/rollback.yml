@@ -4,11 +4,27 @@
   vars:
     app_name: "{{ application | default('inventory-api') }}"
     env_name: "{{ env | default('dev') | lower }}"
-    target_port: "{{ 8101 if env_name == 'dev' else (8102 if env_name == 'qa' else (8103 if env_name == 'staging' else 8104)) }}"
+    target_port: >-
+      {{
+        8301 if app_name == 'reporting-service'
+        else (8201 if app_name == 'inventory-web' and env_name == 'dev'
+        else (8202 if app_name == 'inventory-web' and env_name == 'qa'
+        else (8203 if app_name == 'inventory-web' and env_name == 'staging'
+        else (8204 if app_name == 'inventory-web' and env_name == 'prod'
+        else (8101 if env_name == 'dev'
+        else (8102 if env_name == 'qa'
+        else (8103 if env_name == 'staging'
+        else 8104)))))))
+      }}
     app_pool_name: "{{ app_name }}-{{ env_name }}-pool"
     site_name: "{{ app_name }}-{{ env_name }}"
-    deploy_path: "C:\\inetpub\\nexora\\{{ env_name }}\\{{ 'api' if app_name == 'inventory-api' else 'web' }}"
-    rollback_version: "{{ rollback_to | default('') }}"
+    deploy_path: >-
+      {{
+        'C:\\nexora-devops-platform\\deployments\\reporting-service\\' ~ env_name if app_name == 'reporting-service'
+        else ('C:\\inetpub\\nexora\\' ~ env_name ~ '\\web' if app_name == 'inventory-web'
+        else 'C:\\inetpub\\nexora\\' ~ env_name ~ '\\api')
+      }}
+    rollback_version: "{{ rollback_to | default('1.4.1') }}"
   tasks:
     - name: Execute automated rollback role with aligned variables
       include_role:

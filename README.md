@@ -247,13 +247,13 @@ Open your **Ubuntu WSL2** terminal:
    ```bash
    sudo apt update && sudo apt install -y postgresql postgresql-contrib jq zip bc
    sudo service postgresql start
-   sudo -u postgres psql -c "CREATE USER nexora_admin WITH PASSWORD 'devops_secure_password_123' SUPERUSER;"
+   sudo -u postgres psql -c "CREATE USER nexora_admin WITH PASSWORD '${DB_PASSWORD}' SUPERUSER;"
    sudo -u postgres psql -c "CREATE DATABASE inventory_db OWNER nexora_admin;"
    ```
 
 4. **Execute Migrations & Deterministic Seed (100 SKUs)**:
    ```bash
-   export PGPASSWORD="devops_secure_password_123"
+   export PGPASSWORD="${DB_PASSWORD}"
    /mnt/c/nexora-devops-platform/database/migrations/run_migrations.sh
    psql -h localhost -p 5432 -U nexora_admin -d inventory_db -f /mnt/c/nexora-devops-platform/database/seed/001_seed_products.sql
    ```
@@ -286,7 +286,7 @@ The database lifecycle engine enforces version tracking via the `schema_migratio
 
 ### Verification Query:
 ```bash
-export PGPASSWORD="devops_secure_password_123"
+export PGPASSWORD="${DB_PASSWORD}"
 psql -h localhost -p 5432 -U nexora_admin -d inventory_db -c "
 SELECT COUNT(*) AS total_skus FROM products;
 SELECT version, applied_at FROM schema_migrations ORDER BY applied_at ASC;

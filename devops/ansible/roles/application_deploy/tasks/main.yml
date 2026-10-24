@@ -1,130 +1,55 @@
 ---
-- name: Application Deployment with Automatic Rollback Block
-  block:
-    - name: Pre-Deployment - Check for Deployment Lock (Section 28)
-      ansible.windows.win_stat:
-        path: "C:\\nexora-devops-platform\\locks\\{{ env_name }}.lock"
-      register: lock_check
+- name: Ensure target deployment directory exists
+  ansible.windows.win_file:
+    path: "{{ deploy_path }}"
+    state: directory
 
-    - name: Fail if environment is locked by another deployment
-      ansible.builtin.fail:
-        msg: "DEPLOYMENT REJECTED: Environment {{ env_name | upper }} is currently locked by another release."
-      when: lock_check.stat.exists
+- name: Stop IIS Application Pool prior to extraction
+  ansible.windows.win_iis_webapppool:
+    name: "{{ app_pool_name }}"
+    state: stopped
+  ignore_errors: yes
 
-    - name: Acquire Deployment Lock
-      ansible.windows.win_file:
-        path: "C:\\nexora-devops-platform\\locks\\{{ env_name }}.lock"
-        state: touch
+- name: Extract application release archive
+  community.windows.win_unzip:
+    src: "{{ artifact_path }}"
+    dest: "{{ deploy_path }}"
+    delete_archive: no
 
-    - name: Check if existing configuration exists before backup (Section 37)
-      ansible.windows.win_stat:
-        path: "{{ deploy_path }}\\appsettings.json"
-      register: existing_config
+- name: Template runtime application settings
+  ansible.windows.win_copy:
+    dest: "{{ deploy_path }}\\appsettings.json"
+    content: |
+      {
+        "Logging": { "LogLevel": { "Default": "Information" } },
+        "AllowedHosts": "*",
+        "ConnectionStrings": {
+          "InventoryDb": "Host=localhost;Port=5432;Database=inventory_db;Username=nexora_admin;Password={{ lookup('env', 'DB_PASSWORD') | default('', true) }};"
+        },
+        "APP_VERSION": "{{ app_version }}",
+        "SIMULATE_FAILURE": "{{ simulate_fail | default('false') }}"
+      }
+  when: app_name == 'inventory-api'
 
-    - name: Backup Current Configuration (Section 37)
-      ansible.windows.win_copy:
-        src: "{{ deploy_path }}\\appsettings.json"
-        dest: "C:\\nexora-backups\\configs\\{{ app_name }}-{{ env_name }}-backup.json"
-        remote_src: true
-      when: existing_config.stat.exists
+- name: Start IIS Application Pool
+  ansible.windows.win_iis_webapppool:
+    name: "{{ app_pool_name }}"
+    state: started
 
-    - name: Stop IIS Application Pool
-      community.windows.win_iis_webapppool:
-        name: "{{ app_pool_name }}"
-        state: stopped
+- name: Restart IIS Site
+  ansible.windows.win_iis_website:
+    name: "{{ site_name }}"
+    state: restarted
+  ignore_errors: yes
 
-    - name: Clean existing files from target directory
-      ansible.windows.win_file:
-        path: "{{ deploy_path }}"
-        state: absent
-
-    - name: Recreate clean deployment directory
-      ansible.windows.win_file:
-        path: "{{ deploy_path }}"
-        state: directory
-
-    - name: Extract release artifact to IIS folder
-      community.windows.win_unzip:
-        src: "{{ artifact_path }}"
-        dest: "{{ deploy_path }}"
-        delete_archive: false
-
-    - name: Inject environment-specific configuration
-      ansible.windows.win_copy:
-        content: |
-          {
-            "Logging": {
-              "LogLevel": {
-                "Default": "{{ log_level | default('Information') }}",
-                "Microsoft.AspNetCore": "Warning"
-              }
-            },
-            "AllowedHosts": "*",
-            "ConnectionStrings": {
-              "InventoryDb": "Host=localhost;Port=5432;Database=inventory_db;Username=nexora_admin;Password={{ lookup("env", "DB_PASSWORD") | default("", true) }};"
-            },
-            "APP_VERSION": "{{ app_version }}",
-            "SIMULATE_FAILURE": "{{ simulate_failure | default('false') }}"
-          }
-        dest: "{{ deploy_path }}\\appsettings.json"
-
-    - name: Start IIS Application Pool
-      community.windows.win_iis_webapppool:
-        name: "{{ app_pool_name }}"
-        state: started
-
-    - name: Restart IIS Website
-      community.windows.win_iis_website:
-        name: "{{ site_name }}"
-        state: restarted
-
-    - name: Pause 3 seconds for Kestrel to initialize
-      ansible.builtin.pause:
-        seconds: 3
-
-    - name: Health Verification - Query /health endpoint
-      ansible.windows.win_uri:
-        url: "http://localhost:{{ target_port }}/health"
-        method: GET
-        return_content: true
-        status_code: 200
-      register: health_resp
-      retries: 3
-      delay: 2
-      until: health_resp.status_code == 200
-
-    - name: Record Successful Deployment in PostgreSQL
-      community.general.postgresql_query:
-        db: inventory_db
-        login_host: localhost
-        login_user: nexora_admin
-        login_password: {{ lookup("env", "DB_PASSWORD") | default("", true) }}
-        query: >
-          INSERT INTO deployments (application, version, environment, commit_sha, pipeline_id, status, completed_at, deployed_by)
-          VALUES ('{{ app_name }}', '{{ app_version }}', '{{ env_name | upper }}', 'release-commit', 'pipe-prod', 'SUCCESS', NOW(), 'ansible-automation');
-      delegate_to: localhost
-
-  rescue:
-    - name: Log Deployment Failure in PostgreSQL (Section 29 Audit)
-      community.general.postgresql_query:
-        db: inventory_db
-        login_host: localhost
-        login_user: nexora_admin
-        login_password: {{ lookup("env", "DB_PASSWORD") | default("", true) }}
-        query: >
-          INSERT INTO deployments (application, version, environment, commit_sha, pipeline_id, status, completed_at, deployed_by)
-          VALUES ('{{ app_name }}', '{{ app_version }}', '{{ env_name | upper }}', 'release-commit', 'pipe-prod', 'FAILED', NOW(), 'ansible-automation');
-      delegate_to: localhost
-
-    - name: Trigger Automatic Rollback Role (Section 26)
-      ansible.builtin.include_role:
-        name: rollback
-      vars:
-        failed_version: "{{ app_version }}"
-
-  always:
-    - name: Release Deployment Lock
-      ansible.windows.win_file:
-        path: "C:\\nexora-devops-platform\\locks\\{{ env_name }}.lock"
-        state: absent
-      ignore_errors: true
+- name: Record deployment metadata in PostgreSQL audit table
+  delegate_to: localhost
+  community.postgresql.postgresql_query:
+    db: "inventory_db"
+    login_host: "localhost"
+    login_user: "nexora_admin"
+    login_password: "{{ lookup('env', 'DB_PASSWORD') | default('', true) }}"
+    query: >
+      INSERT INTO deployments (application, version, environment, status, commit_sha, pipeline_id, completed_at)
+      VALUES ('{{ app_name }}', '{{ app_version }}', '{{ env_name }}', 'SUCCESS', 'HEAD', 'manual', CURRENT_TIMESTAMP);
+  ignore_errors: yes

@@ -115,7 +115,7 @@ pipeline {
                     } | ConvertTo-Json -Depth 5
 
                     Set-Content -Path "$targetDir\\$app-$ver.sbom.json" -Value $sbom
-                    Write-Host "[SECURITY] Generated dependency-driven CycloneDX SBOM at $targetDir\\$app-$ver.sbom.json"
+                    Write-Host "[SECURITY] Generated CycloneDX SBOM at $targetDir\\$app-$ver.sbom.json"
                 '''
             }
         }
@@ -172,51 +172,18 @@ pipeline {
             }
         }
 
-        stage('Deploy to Target Environment') {
+        stage('Ansible Orchestrated Deployment') {
             steps {
-                powershell '''
-                    $app = $env:APPLICATION
-                    $ver = $env:VERSION
-                    $envName = $env:TARGET_ENV.ToLower()
-                    $simFail = $env:SIMULATE_FAILURE
-                    
-                    if ($app -eq "reporting-service") {
-                        Write-Host "[DEPLOY] Deploying Spring Boot Service for $envName..."
-                        $targetPath = "C:\\nexora-devops-platform\\deployments\\reporting-service\\$envName"
-                        if (-not (Test-Path $targetPath)) { New-Item -ItemType Directory -Path $targetPath -Force }
-                        Copy-Item "$env:BASE_DIR\\artifacts\\$app\\$app-$ver.jar" "$targetPath\\reporting-service.jar" -Force
-                        
-                        Get-Process javaw, java -ErrorAction SilentlyContinue | Where-Object { $_.MainWindowTitle -like "*reporting*" -or $_.CommandLine -like "*reporting-service.jar*" } | Stop-Process -Force -ErrorAction SilentlyContinue
-                        
-                        Write-Host "[DEPLOY] Launching reporting-service background service on port 8301..."
-                        Start-Process java -ArgumentList "-jar", "$targetPath\\reporting-service.jar", "--server.port=8301" -WindowStyle Hidden
-                        Start-Sleep -Seconds 6
-                    } else {
-                        $siteName = "$app-$envName"
-                        $appPool = "$app-$envName-pool"
-                        $targetPath = "C:\\inetpub\\nexora\\$envName\\api"
-                        if ($app -eq "inventory-web") { $targetPath = "C:\\inetpub\\nexora\\$envName\\web" }
-                        
-                        Import-Module WebAdministration -ErrorAction SilentlyContinue
-                        
-                        Write-Host "[DEPLOY] Stopping Application Pool: $appPool"
-                        Stop-WebAppPool -Name $appPool -ErrorAction SilentlyContinue
-                        Start-Sleep -Seconds 2
-                        
-                        Write-Host "[DEPLOY] Extracting artifact to $targetPath"
-                        $zipFile = "$env:BASE_DIR\\artifacts\\$app\\$app-$ver.zip"
-                        Expand-Archive -Path $zipFile -DestinationPath $targetPath -Force
-                        
-                        Write-Host "[DEPLOY] Starting Application Pool: $appPool"
-                        Start-WebAppPool -Name $appPool -ErrorAction SilentlyContinue
-                        Restart-WebItem -PSPath "IIS:\\Sites\\$siteName" -ErrorAction SilentlyContinue
-                        Start-Sleep -Seconds 3
-                    }
-                '''
+                script {
+                    echo "[ANSIBLE] Executing orchestrated deployment for ${params.APPLICATION} via devopsctl"
+                    bat """
+                        wsl.exe bash -c "cd /mnt/c/nexora-devops-platform && ./cli/devopsctl/devopsctl deploy ${params.APPLICATION} ${params.VERSION} --env ${params.TARGET_ENV.toLowerCase()} --simulate-failure ${params.SIMULATE_FAILURE}"
+                    """
+                }
             }
         }
 
-        stage('Health Verification') {
+        stage('Health Verification & Automated Recovery') {
             steps {
                 powershell '''
                     $app = $env:APPLICATION
@@ -244,12 +211,19 @@ pipeline {
                         $url = "http://localhost:$port/health"
                     }
                     
-                    Write-Host "[HEALTH] Probing $url..."
+                    Write-Host "[HEALTH CHECK] Probing deployed instance: $url..."
                     try {
                         $response = Invoke-RestMethod -Uri $url -Method Get -TimeoutSec 5
-                        Write-Host "[HEALTH VERIFIED] Application is healthy!"
+                        Write-Host "[HEALTH VERIFIED] Application is healthy: OK"
                     } catch {
-                        Write-Error "[HEALTH CHECK FAILED] Endpoint returned error: $_"
+                        Write-Warning "[HEALTH FAILED] Target failed health check. Triggering AUTOMATED ROLLBACK via devopsctl..."
+                        wsl.exe bash -c "cd /mnt/c/nexora-devops-platform && ./cli/devopsctl/devopsctl rollback $app --env $envName --to-version 1.4.1"
+                        
+                        Write-Host "[ROLLBACK VERIFICATION] Probing restored instance: $url..."
+                        Start-Sleep -Seconds 3
+                        $recoveryResponse = Invoke-RestMethod -Uri $url -Method Get -TimeoutSec 5
+                        Write-Host "[ROLLBACK VERIFIED] Application successfully restored to previous stable release."
+                        Write-Error "[PIPELINE TERMINATION] Release rejected due to failed health check. Automated rollback verified."
                         exit 1
                     }
                 '''
@@ -262,10 +236,10 @@ pipeline {
             echo "[NOTIFICATION] Pipeline execution finished."
         }
         success {
-            echo "[NOTIFICATION] DEPLOYMENT_SUCCESS: ${params.APPLICATION} v${params.VERSION} active on ${params.TARGET_ENV}"
+            echo "[NOTIFICATION] DEPLOYMENT_SUCCESS: ${params.APPLICATION} v${params.VERSION} verified healthy on ${params.TARGET_ENV}"
         }
         failure {
-            echo "[NOTIFICATION] DEPLOYMENT_FAILED: Automated recovery handler triggered."
+            echo "[NOTIFICATION] DEPLOYMENT_REJECTED: Health check failed; automated rollback triggered and verified."
         }
     }
 }

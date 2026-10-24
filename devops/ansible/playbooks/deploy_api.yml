@@ -9,6 +9,7 @@
     app_pool_name: "inventory-api-{{ env_name }}-pool"
     site_name: "inventory-api-{{ env_name }}"
     deploy_path: "C:\\inetpub\\nexora\\{{ env_name }}\\api"
+    artifact_path: "C:\\nexora-devops-platform\\artifacts\\inventory-api\\inventory-api-{{ app_version }}.zip"
     simulate_fail: "{{ simulate_failure | default('false') }}"
   roles:
     - application_deploy

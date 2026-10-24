@@ -22,6 +22,9 @@ export interface Product {
       <span class="badge">ENV: {{ envName }}</span>
     </div>
     <div class="container">
+      <div *ngIf="errorMessage" class="error-banner" style="background: #fee2e2; border: 1px solid #ef4444; color: #b91c1c; padding: 1rem; border-radius: 0.5rem; margin-bottom: 1.5rem;">
+        <strong>API Communication Error:</strong> {{ errorMessage }}
+      </div>
       <div class="grid">
         <div class="card"><h3>Total Products</h3><p>{{ products.length }}</p></div>
         <div class="card"><h3>In Stock</h3><p style="color: #16a34a;">{{ inStockCount }}</p></div>
@@ -42,6 +45,9 @@ export interface Product {
               <td>{{ p.quantity }}</td>
               <td><span [style.color]="p.available ? '#16a34a' : '#dc2626'">{{ p.available ? 'In Stock' : 'Out of Stock' }}</span></td>
             </tr>
+            <tr *ngIf="products.length === 0 && !errorMessage">
+              <td colspan="7">No products returned from database.</td>
+            </tr>
           </tbody>
         </table>
       </div>
@@ -53,31 +59,27 @@ export class AppComponent implements OnInit {
   envName = 'DEV';
   inStockCount = 0;
   outOfStockCount = 0;
+  errorMessage: string | null = null;
 
   constructor(private http: HttpClient) {}
 
   ngOnInit() {
     const env = (window as any).__env || { apiUrl: 'http://localhost:8101', environmentName: 'DEV' };
-    this.envName = env.environmentName;
-    this.http.get<Product[]>(`${env.apiUrl}/api/products`).subscribe({
+    this.envName = env.environmentName || 'DEV';
+    const endpoint = (env.apiUrl || 'http://localhost:8101') + '/api/products';
+    
+    this.http.get<Product[]>(endpoint).subscribe({
       next: (data) => {
         this.products = data;
         this.inStockCount = data.filter(p => p.available).length;
         this.outOfStockCount = data.filter(p => !p.available).length;
+        this.errorMessage = null;
       },
-      error: () => {
-        // Fallback deterministic sample
-        this.products = Array.from({ length: 100 }, (_, i) => ({
-          id: i + 1,
-          sku: `SKU-${(i + 1).toString().padStart(3, '0')}`,
-          name: `Enterprise Asset ${i + 1}`,
-          category: 'Hardware',
-          price: 50000 + (i * 500),
-          quantity: 10,
-          available: true
-        }));
-        this.inStockCount = 100;
+      error: (err) => {
+        this.products = [];
+        this.inStockCount = 0;
         this.outOfStockCount = 0;
+        this.errorMessage = 'Backend API unreachable at ' + endpoint + ' (' + (err.statusText || 'Connection Refused') + '). Zero fallback mock data rendered.';
       }
     });
   }

@@ -1,80 +1,63 @@
 ---
-- name: Determine previous successful release from PostgreSQL audit table
-  community.general.postgresql_query:
-    db: inventory_db
-    login_host: localhost
-    login_user: nexora_admin
-    login_password: {{ lookup("env", "DB_PASSWORD") | default("", true) }}
-    query: >
-      SELECT version FROM deployments 
-      WHERE application = '{{ app_name }}' AND environment = '{{ env_name | upper }}' AND status = 'SUCCESS'
-      ORDER BY id DESC LIMIT 1;
-  register: last_success
+- name: Stop running application service or pool
+  block:
+    - name: Stop IIS AppPool
+      ansible.windows.win_iis_webapppool:
+        name: "{{ app_pool_name }}"
+        state: stopped
+      when: app_name != 'reporting-service'
+      ignore_errors: yes
+
+    - name: Terminate Spring Boot Java process
+      ansible.windows.win_shell: |
+        Get-Process javaw, java -ErrorAction SilentlyContinue | Where-Object { $_.CommandLine -like "*reporting-service.jar*" } | Stop-Process -Force -ErrorAction SilentlyContinue
+      when: app_name == 'reporting-service'
+      ignore_errors: yes
+
+- name: Restore previous stable artifact
+  block:
+    - name: Unzip previous stable web/api release
+      community.windows.win_unzip:
+        src: "C:\\nexora-devops-platform\\artifacts\\{{ app_name }}\\{{ app_name }}-{{ target_version }}.zip"
+        dest: "{{ deploy_path }}"
+        delete_archive: no
+      when: app_name != 'reporting-service'
+
+    - name: Copy previous stable reporting JAR
+      ansible.windows.win_copy:
+        src: "C:/nexora-devops-platform/artifacts/reporting-service/reporting-service-{{ target_version }}.jar"
+        dest: "{{ deploy_path }}\\reporting-service.jar"
+        remote_src: yes
+      when: app_name == 'reporting-service'
+
+- name: Restart restored application
+  block:
+    - name: Start IIS AppPool
+      ansible.windows.win_iis_webapppool:
+        name: "{{ app_pool_name }}"
+        state: started
+      when: app_name != 'reporting-service'
+
+    - name: Restart IIS Site
+      ansible.windows.win_iis_website:
+        name: "{{ site_name }}"
+        state: restarted
+      when: app_name != 'reporting-service'
+      ignore_errors: yes
+
+    - name: Start restored Spring Boot service
+      ansible.windows.win_shell: |
+        Start-Process java -ArgumentList "-jar", "{{ deploy_path }}\\reporting-service.jar", "--server.port=8301" -WindowStyle Hidden
+      when: app_name == 'reporting-service'
+
+- name: Record rollback in PostgreSQL audit table
   delegate_to: localhost
-
-- name: Set fallback version if query is empty
-  ansible.builtin.set_fact:
-    rollback_version: "{{ last_success.query_result[0].version if (last_success.query_result is defined and last_success.query_result | length > 0) else '1.4.1' }}"
-
-- name: Announce Rollback Procedure (Section 42 Notification)
-  ansible.builtin.debug:
-    msg: "[ROLLBACK_STARTED] Target: {{ app_name }} | Env: {{ env_name }} | Restoring Version: {{ rollback_version }}"
-
-- name: Stop IIS App Pool for Rollback
-  community.windows.win_iis_webapppool:
-    name: "{{ app_pool_name }}"
-    state: stopped
-
-- name: Extract Previous Verified Artifact
-  community.windows.win_unzip:
-    src: "C:\\nexora-devops-platform\\artifacts\\{{ app_name }}\\{{ app_name }}-{{ rollback_version }}.zip"
-    dest: "{{ deploy_path }}"
-    delete_archive: false
-
-- name: Inject Safe Working Configuration (Force SIMULATE_FAILURE=false)
-  ansible.windows.win_copy:
-    content: |
-      {
-        "Logging": { "LogLevel": { "Default": "Information" } },
-        "AllowedHosts": "*",
-        "ConnectionStrings": {
-          "InventoryDb": "Host=localhost;Port=5432;Database=inventory_db;Username=nexora_admin;Password={{ lookup("env", "DB_PASSWORD") | default("", true) }};"
-        },
-        "APP_VERSION": "{{ rollback_version }}",
-        "SIMULATE_FAILURE": "false"
-      }
-    dest: "{{ deploy_path }}\\appsettings.json"
-  when: app_name == 'inventory-api'
-
-- name: Start IIS App Pool
-  community.windows.win_iis_webapppool:
-    name: "{{ app_pool_name }}"
-    state: started
-
-- name: Restart IIS Website
-  community.windows.win_iis_website:
-    name: "{{ site_name }}"
-    state: restarted
-
-- name: Verify Post-Rollback Health
-  ansible.windows.win_uri:
-    url: "http://localhost:{{ target_port }}/health"
-    method: GET
-    status_code: 200
-  retries: 3
-  delay: 2
-
-- name: Record Rollback Event in PostgreSQL
-  community.general.postgresql_query:
-    db: inventory_db
-    login_host: localhost
-    login_user: nexora_admin
-    login_password: {{ lookup("env", "DB_PASSWORD") | default("", true) }}
+  community.postgresql.postgresql_query:
+    db: "inventory_db"
+    login_host: "localhost"
+    login_user: "nexora_admin"
+    login_password: "{{ lookup('env', 'DB_PASSWORD') | default('', true) }}"
     query: >
-      INSERT INTO deployments (application, version, environment, commit_sha, pipeline_id, status, completed_at, deployed_by, rollback_of)
-      VALUES ('{{ app_name }}', '{{ rollback_version }}', '{{ env_name | upper }}', 'rollback-sha', 'rb-001', 'SUCCESS', NOW(), 'ansible-auto-rollback', '{{ failed_version }}');
-  delegate_to: localhost
-
-- name: Announce Rollback Complete
-  ansible.builtin.debug:
-    msg: "[ROLLBACK_SUCCESS] Restored {{ app_name }} to version {{ rollback_version }} on {{ env_name | upper }}"
+      INSERT INTO deployments (application, version, environment, status, rollback_version, rollback_of, completed_at)
+      VALUES ('{{ app_name }}', '{{ target_version }}', '{{ env_name }}', 'ROLLED_BACK', '{{ target_version }}', 'FAILED_RELEASE', CURRENT_TIMESTAMP);
+  ignore_errors: yes
