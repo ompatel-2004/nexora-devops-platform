@@ -60,4 +60,4 @@
     query: >
       INSERT INTO deployments (application, version, environment, status, rollback_version, rollback_of, completed_at)
       VALUES ('{{ app_name }}', '{{ target_version }}', '{{ env_name }}', 'ROLLED_BACK', '{{ target_version }}', 'FAILED_RELEASE', CURRENT_TIMESTAMP);
-  ignore_errors: yes
+  ignore_errors: no

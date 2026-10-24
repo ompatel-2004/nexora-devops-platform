@@ -24,7 +24,7 @@
         else ('C:\\inetpub\\nexora\\' ~ env_name ~ '\\web' if app_name == 'inventory-web'
         else 'C:\\inetpub\\nexora\\' ~ env_name ~ '\\api')
       }}
-    rollback_version: "{{ rollback_to | default('1.4.1') }}"
+    rollback_version: "{{ rollback_to | default('1.4.1', true) }}"
   tasks:
     - name: Execute automated rollback role with aligned variables
       include_role:

@@ -1,24 +1,41 @@
 ---
-- name: Deploy Nexora Reporting Service
+- name: Deploy Nexora Reporting Service from Nexus
   hosts: windows
   vars:
     app_name: "reporting-service"
     app_version: "{{ version | default('1.4.2') }}"
     target_env: "{{ env | default('dev') | lower }}"
+    nexus_base: "{{ lookup('env', 'NEXUS_URL') | default('http://localhost:8081/repository/nexora-releases', true) }}"
+    nexus_user: "{{ lookup('env', 'NEXUS_USER') | default('admin', true) }}"
+    nexus_pass: "{{ lookup('env', 'NEXUS_PASSWORD') | default('', true) }}"
     deploy_dir: "C:\\nexora-devops-platform\\deployments\\reporting-service\\{{ target_env }}"
+    artifact_filename: "reporting-service-{{ app_version }}.jar"
+    download_dest: "C:\\nexora-devops-platform\\artifacts\\reporting-service\\{{ artifact_filename }}"
   tasks:
-    - name: Ensure deployment directory exists
+    - name: Ensure deployment and artifact directories exist
       ansible.windows.win_file:
-        path: "{{ deploy_dir }}"
+        path: "{{ item }}"
         state: directory
+      loop:
+        - "{{ deploy_dir }}"
+        - "C:\\nexora-devops-platform\\artifacts\\reporting-service"
 
-    - name: Copy Reporting Service JAR artifact
+    - name: Retrieve immutable jar artifact from Nexus
+      ansible.windows.win_get_url:
+        url: "{{ nexus_base }}/{{ app_name }}/{{ app_version }}/{{ artifact_filename }}"
+        dest: "{{ download_dest }}"
+        url_username: "{{ nexus_user }}"
+        url_password: "{{ nexus_pass }}"
+        force: yes
+      ignore_errors: yes
+
+    - name: Copy artifact to execution directory
       ansible.windows.win_copy:
-        src: "C:/nexora-devops-platform/artifacts/reporting-service/reporting-service-{{ app_version }}.jar"
+        src: "{{ download_dest }}"
         dest: "{{ deploy_dir }}\\reporting-service.jar"
         remote_src: yes
 
-    - name: Stop existing service instance if running
+    - name: Stop existing service instance
       ansible.windows.win_shell: |
         Get-Process java -ErrorAction SilentlyContinue | Where-Object { $_.CommandLine -like "*reporting-service.jar*" } | Stop-Process -Force -ErrorAction SilentlyContinue
 

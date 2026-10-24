@@ -52,4 +52,4 @@
     query: >
       INSERT INTO deployments (application, version, environment, status, commit_sha, pipeline_id, completed_at)
       VALUES ('{{ app_name }}', '{{ app_version }}', '{{ env_name }}', 'SUCCESS', 'HEAD', 'manual', CURRENT_TIMESTAMP);
-  ignore_errors: yes
+  ignore_errors: no

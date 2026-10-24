@@ -1,39 +1,58 @@
 #!/usr/bin/env bash
-set -e
+set -euo pipefail
 
-RELEASE_VER="${1:-1.4.2}"
-OUTPUT_FILE="/mnt/c/nexora-devops-platform/artifacts/release-manifest-${RELEASE_VER}.json"
+VERSION="${1:-1.4.2}"
+BASE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+OUTPUT_FILE="${BASE_DIR}/artifacts/release-manifest-${VERSION}.json"
 
-COMMIT_SHA=$(git rev-parse --short HEAD 2>/dev/null || echo "a4f7c7f")
+mkdir -p "${BASE_DIR}/artifacts"
 
-API_SHA=$(sha256sum /mnt/c/nexora-devops-platform/artifacts/inventory-api/inventory-api-${RELEASE_VER}.zip 2>/dev/null | cut -d' ' -f1 || echo "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855")
-WEB_SHA=$(sha256sum /mnt/c/nexora-devops-platform/artifacts/inventory-web/inventory-web-1.4.1.zip 2>/dev/null | cut -d' ' -f1 || echo "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855")
-JAVA_SHA=$(sha256sum /mnt/c/nexora-devops-platform/artifacts/reporting-service/reporting-service-1.4.1.jar 2>/dev/null | cut -d' ' -f1 || echo "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855")
+check_and_hash() {
+    local file_path="$1"
+    local app_name="$2"
+    if [[ ! -f "${file_path}" ]]; then
+        echo "ERROR: Required artifact ${file_path} does not exist!" >&2
+        exit 1
+    fi
+    sha256sum "${file_path}" | awk '{print $1}'
+}
 
-cat << JSON > "$OUTPUT_FILE"
+API_ZIP="${BASE_DIR}/artifacts/inventory-api/inventory-api-${VERSION}.zip"
+WEB_ZIP="${BASE_DIR}/artifacts/inventory-web/inventory-web-${VERSION}.zip"
+REPORTING_JAR="${BASE_DIR}/artifacts/reporting-service/reporting-service-${VERSION}.jar"
+
+API_HASH=$(check_and_hash "${API_ZIP}" "inventory-api")
+WEB_HASH=$(check_and_hash "${WEB_ZIP}" "inventory-web")
+REPORTING_HASH=$(check_and_hash "${REPORTING_JAR}" "reporting-service")
+
+cat << MANIFEST > "${OUTPUT_FILE}"
 {
-  "release": "${RELEASE_VER}",
-  "commit": "${COMMIT_SHA}",
-  "generated_at": "$(date -u +"%Y-%m-%dT%H:%M:%SZ")",
-  "applications": [
+  "manifestVersion": "1.0",
+  "releaseVersion": "${VERSION}",
+  "generatedAt": "$(date -u +"%Y-%m-%dT%H:%M:%SZ")",
+  "artifacts": [
     {
-      "name": "inventory-api",
-      "version": "${RELEASE_VER}",
-      "sha256": "${API_SHA}"
+      "application": "inventory-api",
+      "version": "${VERSION}",
+      "file": "inventory-api-${VERSION}.zip",
+      "sha256": "${API_HASH}",
+      "verified": true
     },
     {
-      "name": "inventory-web",
-      "version": "1.4.1",
-      "sha256": "${WEB_SHA}"
+      "application": "inventory-web",
+      "version": "${VERSION}",
+      "file": "inventory-web-${VERSION}.zip",
+      "sha256": "${WEB_HASH}",
+      "verified": true
     },
     {
-      "name": "reporting-service",
-      "version": "1.4.1",
-      "sha256": "${JAVA_SHA}"
+      "application": "reporting-service",
+      "version": "${VERSION}",
+      "file": "reporting-service-${VERSION}.jar",
+      "sha256": "${REPORTING_HASH}",
+      "verified": true
     }
   ]
 }
-JSON
-
-echo "[MANIFEST] Release manifest generated: $OUTPUT_FILE"
-cat "$OUTPUT_FILE" | jq .
+MANIFEST
+echo "SUCCESS: Manifest generated at ${OUTPUT_FILE}"

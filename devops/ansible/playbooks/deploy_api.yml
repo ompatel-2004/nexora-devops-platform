@@ -1,15 +1,44 @@
 ---
-- name: Deploy Nexora Inventory API to Windows IIS
+- name: Deploy Nexora Inventory API from Nexus
   hosts: windows
   vars:
     app_name: "inventory-api"
     env_name: "{{ env | default('dev') | lower }}"
     app_version: "{{ version | default('1.4.2') }}"
+    nexus_base: "{{ lookup('env', 'NEXUS_URL') | default('http://localhost:8081/repository/nexora-releases', true) }}"
+    nexus_user: "{{ lookup('env', 'NEXUS_USER') | default('admin', true) }}"
+    nexus_pass: "{{ lookup('env', 'NEXUS_PASSWORD') | default('', true) }}"
     target_port: "{{ 8101 if env_name == 'dev' else (8102 if env_name == 'qa' else (8103 if env_name == 'staging' else 8104)) }}"
     app_pool_name: "inventory-api-{{ env_name }}-pool"
     site_name: "inventory-api-{{ env_name }}"
     deploy_path: "C:\\inetpub\\nexora\\{{ env_name }}\\api"
-    artifact_path: "C:\\nexora-devops-platform\\artifacts\\inventory-api\\inventory-api-{{ app_version }}.zip"
+    artifact_filename: "inventory-api-{{ app_version }}.zip"
+    download_dest: "C:\\nexora-devops-platform\\artifacts\\inventory-api\\{{ artifact_filename }}"
     simulate_fail: "{{ simulate_failure | default('false') }}"
-  roles:
-    - application_deploy
+  tasks:
+    - name: Ensure artifact download directory exists
+      ansible.windows.win_file:
+        path: "C:\\nexora-devops-platform\\artifacts\\inventory-api"
+        state: directory
+
+    - name: Retrieve immutable release package from Nexus
+      ansible.windows.win_get_url:
+        url: "{{ nexus_base }}/{{ app_name }}/{{ app_version }}/{{ artifact_filename }}"
+        dest: "{{ download_dest }}"
+        url_username: "{{ nexus_user }}"
+        url_password: "{{ nexus_pass }}"
+        force: yes
+      register: nexus_download
+      ignore_errors: yes
+
+    - name: Verify artifact integrity
+      ansible.windows.win_stat:
+        path: "{{ download_dest }}"
+      register: artifact_stat
+      failed_when: not artifact_stat.stat.exists
+
+    - name: Include standard application deployment role
+      include_role:
+        name: application_deploy
+      vars:
+        artifact_path: "{{ download_dest }}"
