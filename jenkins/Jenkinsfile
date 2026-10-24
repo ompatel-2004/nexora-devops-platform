@@ -13,7 +13,6 @@ pipeline {
         NEXUS_URL    = 'http://localhost:8081/repository/nexora-releases'
         SONAR_HOST   = 'http://localhost:9000'
         BASE_DIR     = 'C:\\nexora-devops-platform'
-        // Retrieve credentials using valid Declarative syntax
         NEXUS_CREDS  = credentials('nexus')
         SONAR_TOKEN  = credentials('sonar-token')
     }
@@ -29,13 +28,14 @@ pipeline {
         stage('Build & Unit Tests') {
             steps {
                 script {
-                    echo "[BUILD] Compiling and testing application: ${params.APPLICATION}"
+                    echo "[BUILD] Compiling and executing unit tests for: ${params.APPLICATION}"
                     if (params.APPLICATION == 'inventory-api') {
                         bat 'dotnet publish "%BASE_DIR%\\applications\\inventory-api\\InventoryApi.csproj" -c Release -f net8.0 -o "%BASE_DIR%\\applications\\inventory-api\\publish"'
                     } else if (params.APPLICATION == 'reporting-service') {
-                        bat 'cd /d "%BASE_DIR%\\applications\\reporting-service" && mvn clean package -DskipTests'
+                        // Real packaging and unit test execution
+                        bat 'cd /d "%BASE_DIR%\\applications\\reporting-service" && mvn clean test package'
                     } else if (params.APPLICATION == 'inventory-web') {
-                        bat 'cd /d "%BASE_DIR%\\applications\\inventory-web" && node build.js'
+                        bat 'cd /d "%BASE_DIR%\\applications\\inventory-web" && node test-runner.js && node build.js'
                     }
                 }
             }
@@ -46,7 +46,7 @@ pipeline {
                 powershell '''
                     $app = $env:APPLICATION
                     $token = $env:SONAR_TOKEN
-                    Write-Host "[SONARQUBE] Verifying real Quality Gate status on $env:SONAR_HOST for project: $app..."
+                    Write-Host "[SONARQUBE] Checking strict Quality Gate status on $env:SONAR_HOST for project: $app..."
                     
                     $auth = [Convert]::ToBase64String([Text.Encoding]::ASCII.GetBytes("${token}:"))
                     $headers = @{ Authorization = "Basic $auth" }
@@ -56,15 +56,16 @@ pipeline {
                         $response = Invoke-RestMethod -Uri $qgUrl -Method Get -Headers $headers -TimeoutSec 10
                         $status = $response.projectStatus.status
                         
-                        Write-Host "[SONARQUBE] Real Quality Gate Status: $status"
-                        if ($status -eq "ERROR") {
-                            Write-Error "[QUALITY GATE FAILED] SonarQube reported status: $status"
+                        Write-Host "[SONARQUBE] Live Quality Gate Status: $status"
+                        if ($status -ne "OK") {
+                            Write-Error "[QUALITY GATE FAILED] Strict gate enforcement failed. Reported status: $status"
                             exit 1
                         } else {
-                            Write-Host "[QUALITY GATE PASSED] Project $app satisfies all Quality Gate criteria."
+                            Write-Host "[QUALITY GATE PASSED] Quality Gate status verified: OK."
                         }
                     } catch {
-                        Write-Warning "[SONARQUBE] Quality Gate query completed with status: $_"
+                        Write-Error "[QUALITY GATE ERROR] SonarQube API unreachable or query rejected: $_"
+                        exit 1
                     }
                 '''
             }
@@ -128,9 +129,14 @@ pipeline {
                             $auth = [Convert]::ToBase64String([Text.Encoding]::ASCII.GetBytes("$($env:NEXUS_CREDS_USR):$($env:NEXUS_CREDS_PSW)"))
                             $headers = @{ Authorization = "Basic $auth" }
                             Invoke-RestMethod -Uri $nexusUri -Method Put -InFile $packageFile -Headers $headers
-                            Write-Host "[NEXUS UPLOAD SUCCESS] Artifact upload complete!"
+                            Write-Host "[NEXUS UPLOAD SUCCESS] Artifact uploaded successfully."
                         } catch {
-                            Write-Warning "[NEXUS UPLOAD] Nexus response: $_"
+                            if ($_.Exception.Response.StatusCode.value__ -eq 400) {
+                                Write-Host "[NEXUS IMMUTABILITY] Version $ver already published in Nexus immutable release repository."
+                            } else {
+                                Write-Error "[NEXUS UPLOAD FAILED] $_"
+                                exit 1
+                            }
                         }
                     }
                 '''
@@ -171,19 +177,6 @@ pipeline {
                         Write-Host "[DEPLOY] Extracting artifact to $targetPath"
                         $zipFile = "$env:BASE_DIR\\artifacts\\$app\\$app-$ver.zip"
                         Expand-Archive -Path $zipFile -DestinationPath $targetPath -Force
-                        
-                        if ($app -eq "inventory-api") {
-                            $config = @{
-                                Logging = @{ LogLevel = @{ Default = "Information" } }
-                                AllowedHosts = "*"
-                                ConnectionStrings = @{
-                                    InventoryDb = "Host=localhost;Port=5432;Database=inventory_db;Username=nexora_admin;Password=devops_secure_password_123;"
-                                }
-                                APP_VERSION = $ver
-                                SIMULATE_FAILURE = $simFail
-                            } | ConvertTo-Json -Depth 5
-                            Set-Content -Path "$targetPath\\appsettings.json" -Value $config
-                        }
                         
                         Write-Host "[DEPLOY] Starting Application Pool: $appPool"
                         Start-WebAppPool -Name $appPool -ErrorAction SilentlyContinue

@@ -16,12 +16,23 @@ builder.Services.AddCors(options =>
 var app = builder.Build();
 app.UseCors("AllowAll");
 
-string GetConnectionString() =>
-    app.Configuration.GetConnectionString("InventoryDb") 
-    ?? Environment.GetEnvironmentVariable("INVENTORY_DB_CONNECTION") 
-    ?? "Host=localhost;Port=5432;Database=inventory_db;Username=nexora_admin;Password=devops_secure_password_123;";
+string GetConnectionString()
+{
+    var connStr = app.Configuration.GetConnectionString("InventoryDb") 
+                  ?? Environment.GetEnvironmentVariable("INVENTORY_DB_CONNECTION");
 
-// GET /health
+    if (string.IsNullOrWhiteSpace(connStr))
+    {
+        var dbHost = Environment.GetEnvironmentVariable("DB_HOST") ?? "localhost";
+        var dbPort = Environment.GetEnvironmentVariable("DB_PORT") ?? "5432";
+        var dbName = Environment.GetEnvironmentVariable("DB_NAME") ?? "inventory_db";
+        var dbUser = Environment.GetEnvironmentVariable("DB_USER") ?? "nexora_admin";
+        var dbPass = Environment.GetEnvironmentVariable("DB_PASSWORD") ?? "";
+        connStr = $"Host={dbHost};Port={dbPort};Database={dbName};Username={dbUser};Password={dbPass};";
+    }
+    return connStr;
+}
+
 app.MapGet("/health", () =>
 {
     var simulateFail = app.Configuration["SIMULATE_FAILURE"];
@@ -42,64 +53,47 @@ app.MapGet("/health", () =>
     }
 });
 
-// GET /api/products
 app.MapGet("/api/products", () =>
 {
     var products = new List<Product>();
-    try
+    using var conn = new NpgsqlConnection(GetConnectionString());
+    conn.Open();
+    using var cmd = new NpgsqlCommand("SELECT id, sku, name, category, price, quantity, available FROM products ORDER BY id ASC;", conn);
+    using var reader = cmd.ExecuteReader();
+    while (reader.Read())
     {
-        using var conn = new NpgsqlConnection(GetConnectionString());
-        conn.Open();
-        using var cmd = new NpgsqlCommand("SELECT id, sku, name, category, price, quantity, available FROM products ORDER BY id ASC LIMIT 100;", conn);
-        using var reader = cmd.ExecuteReader();
-        while (reader.Read())
-        {
-            products.Add(new Product(
-                reader.GetInt32(0),
-                reader.GetString(1),
-                reader.GetString(2),
-                reader.IsDBNull(3) ? "General" : reader.GetString(3),
-                reader.GetDecimal(4),
-                reader.GetInt32(5),
-                reader.GetBoolean(6)
-            ));
-        }
-    }
-    catch
-    {
-        // Fallback deterministic sample if DB is seeding
-        for (int i = 1; i <= 10; i++)
-        {
-            products.Add(new Product(100 + i, $"LAP-{i:D3}", $"Enterprise Workstation {i}", "Hardware", 74999m + (i * 1000), 10, true));
-        }
+        products.Add(new Product(
+            reader.GetInt32(0),
+            reader.GetString(1),
+            reader.GetString(2),
+            reader.IsDBNull(3) ? "General" : reader.GetString(3),
+            reader.GetDecimal(4),
+            reader.GetInt32(5),
+            reader.GetBoolean(6)
+        ));
     }
     return Results.Ok(products);
 });
 
-// GET /api/products/{id}
 app.MapGet("/api/products/{id:int}", (int id) =>
 {
-    try
+    using var conn = new NpgsqlConnection(GetConnectionString());
+    conn.Open();
+    using var cmd = new NpgsqlCommand("SELECT id, sku, name, category, price, quantity, available FROM products WHERE id = @id;", conn);
+    cmd.Parameters.AddWithValue("id", id);
+    using var reader = cmd.ExecuteReader();
+    if (reader.Read())
     {
-        using var conn = new NpgsqlConnection(GetConnectionString());
-        conn.Open();
-        using var cmd = new NpgsqlCommand("SELECT id, sku, name, category, price, quantity, available FROM products WHERE id = @id;", conn);
-        cmd.Parameters.AddWithValue("id", id);
-        using var reader = cmd.ExecuteReader();
-        if (reader.Read())
-        {
-            return Results.Ok(new Product(
-                reader.GetInt32(0),
-                reader.GetString(1),
-                reader.GetString(2),
-                reader.IsDBNull(3) ? "General" : reader.GetString(3),
-                reader.GetDecimal(4),
-                reader.GetInt32(5),
-                reader.GetBoolean(6)
-            ));
-        }
+        return Results.Ok(new Product(
+            reader.GetInt32(0),
+            reader.GetString(1),
+            reader.GetString(2),
+            reader.IsDBNull(3) ? "General" : reader.GetString(3),
+            reader.GetDecimal(4),
+            reader.GetInt32(5),
+            reader.GetBoolean(6)
+        ));
     }
-    catch { }
     return Results.NotFound(new { error = $"Product with ID {id} not found" });
 });
 
