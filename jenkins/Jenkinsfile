@@ -11,11 +11,11 @@ pipeline {
 
     environment {
         NEXUS_URL    = 'http://localhost:8081/repository/nexora-releases'
-        NEXUS_USER   = credentials('NEXUS_USERNAME') ?: 'admin'
-        NEXUS_PASS   = credentials('NEXUS_PASSWORD') ?: 'Sjom@2003'
         SONAR_HOST   = 'http://localhost:9000'
-        SONAR_TOKEN  = credentials('SONAR_AUTH_TOKEN') ?: 'sqa_209ae89a46f0090f1abf830987bd24b35afdcc64'
         BASE_DIR     = 'C:\\nexora-devops-platform'
+        // Retrieve credentials using valid Declarative syntax
+        NEXUS_CREDS  = credentials('nexus-creds')
+        SONAR_TOKEN  = credentials('sonar-token')
     }
 
     stages {
@@ -31,7 +31,7 @@ pipeline {
                 script {
                     echo "[BUILD] Compiling and testing application: ${params.APPLICATION}"
                     if (params.APPLICATION == 'inventory-api') {
-                        bat 'dotnet publish "%BASE_DIR%\\applications\\inventory-api\\InventoryApi.csproj" -c Release -o "%BASE_DIR%\\applications\\inventory-api\\publish"'
+                        bat 'dotnet publish "%BASE_DIR%\\applications\\inventory-api\\InventoryApi.csproj" -c Release -f net8.0 -o "%BASE_DIR%\\applications\\inventory-api\\publish"'
                     } else if (params.APPLICATION == 'reporting-service') {
                         bat 'cd /d "%BASE_DIR%\\applications\\reporting-service" && mvn clean package -DskipTests'
                     } else if (params.APPLICATION == 'inventory-web') {
@@ -64,7 +64,7 @@ pipeline {
                             Write-Host "[QUALITY GATE PASSED] Project $app satisfies all Quality Gate criteria."
                         }
                     } catch {
-                        Write-Warning "[SONARQUBE] Project status query completed: $_"
+                        Write-Warning "[SONARQUBE] Quality Gate query completed with status: $_"
                     }
                 '''
             }
@@ -125,10 +125,10 @@ pipeline {
                         $nexusUri = "$env:NEXUS_URL/$app/$ver/$fileName"
                         Write-Host "[NEXUS] Publishing artifact to $nexusUri..."
                         try {
-                            $auth = [Convert]::ToBase64String([Text.Encoding]::ASCII.GetBytes("$($env:NEXUS_USER):$($env:NEXUS_PASS)"))
+                            $auth = [Convert]::ToBase64String([Text.Encoding]::ASCII.GetBytes("$($env:NEXUS_CREDS_USR):$($env:NEXUS_CREDS_PSW)"))
                             $headers = @{ Authorization = "Basic $auth" }
                             Invoke-RestMethod -Uri $nexusUri -Method Put -InFile $packageFile -Headers $headers
-                            Write-Host "[NEXUS UPLOAD SUCCESS] Artifact immutable upload complete!"
+                            Write-Host "[NEXUS UPLOAD SUCCESS] Artifact upload complete!"
                         } catch {
                             Write-Warning "[NEXUS UPLOAD] Nexus response: $_"
                         }
