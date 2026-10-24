@@ -14,7 +14,7 @@ pipeline {
         SONAR_HOST   = 'http://localhost:9000'
         BASE_DIR     = 'C:\\nexora-devops-platform'
         // Retrieve credentials using valid Declarative syntax
-        NEXUS_CREDS  = credentials('nexus-creds')
+        NEXUS_CREDS  = credentials('nexus')
         SONAR_TOKEN  = credentials('sonar-token')
     }
 
