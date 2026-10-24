@@ -1,0 +1,80 @@
+---
+- name: Determine previous successful release from PostgreSQL audit table
+  community.general.postgresql_query:
+    db: inventory_db
+    login_host: localhost
+    login_user: nexora_admin
+    login_password: devops_secure_password_123
+    query: >
+      SELECT version FROM deployments 
+      WHERE application = '{{ app_name }}' AND environment = '{{ env_name | upper }}' AND status = 'SUCCESS'
+      ORDER BY id DESC LIMIT 1;
+  register: last_success
+  delegate_to: localhost
+
+- name: Set fallback version if query is empty
+  ansible.builtin.set_fact:
+    rollback_version: "{{ last_success.query_result[0].version if (last_success.query_result is defined and last_success.query_result | length > 0) else '1.4.1' }}"
+
+- name: Announce Rollback Procedure (Section 42 Notification)
+  ansible.builtin.debug:
+    msg: "[ROLLBACK_STARTED] Target: {{ app_name }} | Env: {{ env_name }} | Restoring Version: {{ rollback_version }}"
+
+- name: Stop IIS App Pool for Rollback
+  community.windows.win_iis_webapppool:
+    name: "{{ app_pool_name }}"
+    state: stopped
+
+- name: Extract Previous Verified Artifact
+  community.windows.win_unzip:
+    src: "C:\\nexora-devops-platform\\artifacts\\{{ app_name }}\\{{ app_name }}-{{ rollback_version }}.zip"
+    dest: "{{ deploy_path }}"
+    delete_archive: false
+
+- name: Inject Safe Working Configuration (Force SIMULATE_FAILURE=false)
+  ansible.windows.win_copy:
+    content: |
+      {
+        "Logging": { "LogLevel": { "Default": "Information" } },
+        "AllowedHosts": "*",
+        "ConnectionStrings": {
+          "InventoryDb": "Host=localhost;Port=5432;Database=inventory_db;Username=nexora_admin;Password=devops_secure_password_123;"
+        },
+        "APP_VERSION": "{{ rollback_version }}",
+        "SIMULATE_FAILURE": "false"
+      }
+    dest: "{{ deploy_path }}\\appsettings.json"
+  when: app_name == 'inventory-api'
+
+- name: Start IIS App Pool
+  community.windows.win_iis_webapppool:
+    name: "{{ app_pool_name }}"
+    state: started
+
+- name: Restart IIS Website
+  community.windows.win_iis_website:
+    name: "{{ site_name }}"
+    state: restarted
+
+- name: Verify Post-Rollback Health
+  ansible.windows.win_uri:
+    url: "http://localhost:{{ target_port }}/health"
+    method: GET
+    status_code: 200
+  retries: 3
+  delay: 2
+
+- name: Record Rollback Event in PostgreSQL
+  community.general.postgresql_query:
+    db: inventory_db
+    login_host: localhost
+    login_user: nexora_admin
+    login_password: devops_secure_password_123
+    query: >
+      INSERT INTO deployments (application, version, environment, commit_sha, pipeline_id, status, completed_at, deployed_by, rollback_of)
+      VALUES ('{{ app_name }}', '{{ rollback_version }}', '{{ env_name | upper }}', 'rollback-sha', 'rb-001', 'SUCCESS', NOW(), 'ansible-auto-rollback', '{{ failed_version }}');
+  delegate_to: localhost
+
+- name: Announce Rollback Complete
+  ansible.builtin.debug:
+    msg: "[ROLLBACK_SUCCESS] Restored {{ app_name }} to version {{ rollback_version }} on {{ env_name | upper }}"

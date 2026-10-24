@@ -1,0 +1,22 @@
+{
+  "release": "1.4.2",
+  "commit": "a4f7c7f",
+  "generated_at": "2026-10-24T07:20:18Z",
+  "applications": [
+    {
+      "name": "inventory-api",
+      "version": "1.4.2",
+      "sha256": "c6df0c825c5e47a6f3ec03062f24ebd8719785a34c10dc877b5c9654edaff9a3"
+    },
+    {
+      "name": "inventory-web",
+      "version": "1.4.1",
+      "sha256": "749c1a1b688b0fe3489ee4284cc7382f5bd264d8e057c3d44c697545ee8eba15"
+    },
+    {
+      "name": "reporting-service",
+      "version": "1.4.1",
+      "sha256": "68fa17adb2b0c223da1d399995b96d7603f7449b1fdf7f1e5d5787397e53bf61"
+    }
+  ]
+}

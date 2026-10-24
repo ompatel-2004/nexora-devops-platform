@@ -1,0 +1,10 @@
+{
+  "version": 2,
+  "dgSpecHash": "uP8tGJ/ytYU=",
+  "success": true,
+  "projectFilePath": "C:\\nexora-devops-platform\\applications\\inventory-api\\InventoryApi.csproj",
+  "expectedPackageFiles": [
+    "C:\\Users\\HP\\.nuget\\packages\\npgsql\\10.0.3\\npgsql.10.0.3.nupkg.sha512"
+  ],
+  "logs": []
+}

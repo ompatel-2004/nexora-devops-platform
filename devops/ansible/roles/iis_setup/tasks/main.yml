@@ -1,0 +1,58 @@
+---
+- name: Ensure target application directory structures exist
+  ansible.windows.win_file:
+    path: "{{ item }}"
+    state: directory
+  loop:
+    - C:\inetpub\nexora\dev\api
+    - C:\inetpub\nexora\dev\web
+    - C:\inetpub\nexora\qa\api
+    - C:\inetpub\nexora\qa\web
+    - C:\inetpub\nexora\staging\api
+    - C:\inetpub\nexora\staging\web
+    - C:\inetpub\nexora\prod\api
+    - C:\inetpub\nexora\prod\web
+    - C:\nexora-backups\configs
+
+- name: Create or ensure Application Pools exist (No Managed Code for .NET 8 / Angular)
+  community.windows.win_iis_webapppool:
+    name: "{{ item }}"
+    state: started
+    attributes:
+      managedRuntimeVersion: ""
+      startMode: AlwaysRunning
+  loop:
+    - inventory-api-dev-pool
+    - inventory-web-dev-pool
+    - inventory-api-qa-pool
+    - inventory-web-qa-pool
+    - inventory-api-staging-pool
+    - inventory-web-staging-pool
+    - inventory-api-prod-pool
+    - inventory-web-prod-pool
+
+- name: Create IIS Web Sites for all environments
+  community.windows.win_iis_website:
+    name: "{{ item.name }}"
+    state: started
+    port: "{{ item.port }}"
+    application_pool: "{{ item.pool }}"
+    physical_path: "{{ item.path }}"
+  loop:
+    - { name: 'inventory-api-dev', port: 8101, pool: 'inventory-api-dev-pool', path: 'C:\inetpub\nexora\dev\api' }
+    - { name: 'inventory-web-dev', port: 8201, pool: 'inventory-web-dev-pool', path: 'C:\inetpub\nexora\dev\web' }
+    - { name: 'inventory-api-qa', port: 8102, pool: 'inventory-api-qa-pool', path: 'C:\inetpub\nexora\qa\api' }
+    - { name: 'inventory-web-qa', port: 8202, pool: 'inventory-web-qa-pool', path: 'C:\inetpub\nexora\qa\web' }
+    - { name: 'inventory-api-staging', port: 8103, pool: 'inventory-api-staging-pool', path: 'C:\inetpub\nexora\staging\api' }
+    - { name: 'inventory-web-staging', port: 8203, pool: 'inventory-web-staging-pool', path: 'C:\inetpub\nexora\staging\web' }
+    - { name: 'inventory-api-prod', port: 8104, pool: 'inventory-api-prod-pool', path: 'C:\inetpub\nexora\prod\api' }
+    - { name: 'inventory-web-prod', port: 8204, pool: 'inventory-web-prod-pool', path: 'C:\inetpub\nexora\prod\web' }
+
+- name: Grant read & execute permissions to IIS_IUSRS
+  ansible.windows.win_acl:
+    path: C:\inetpub\nexora
+    user: IIS_IUSRS
+    rights: ReadAndExecute
+    type: allow
+    state: present
+    inherit: ContainerInherit, ObjectInherit

@@ -1,0 +1,77 @@
+---
+- name: Deploy Inventory Web Dashboard to Target IIS Environment
+  hosts: windows
+  gather_facts: false
+  vars:
+    app_version: "{{ version | default('1.4.1') }}"
+    env_name: "{{ env | default('dev') }}"
+    site_name: "inventory-web-{{ env_name }}"
+    app_pool_name: "inventory-web-{{ env_name }}-pool"
+    deploy_path: "C:\\inetpub\\nexora\\{{ env_name }}\\web"
+    artifact_path: "C:\\nexora-devops-platform\\artifacts\\inventory-web\\inventory-web-{{ app_version }}.zip"
+    target_port: "{{ 8201 if env_name == 'dev' else (8202 if env_name == 'qa' else (8203 if env_name == 'staging' else 8204)) }}"
+    api_port: "{{ 8101 if env_name == 'dev' else (8102 if env_name == 'qa' else (8103 if env_name == 'staging' else 8104)) }}"
+
+  tasks:
+    - name: Stop IIS Application Pool prior to deployment
+      community.windows.win_iis_webapppool:
+        name: "{{ app_pool_name }}"
+        state: stopped
+
+    - name: Purge old deployment files
+      ansible.windows.win_file:
+        path: "{{ deploy_path }}"
+        state: absent
+
+    - name: Recreate web deployment directory
+      ansible.windows.win_file:
+        path: "{{ deploy_path }}"
+        state: directory
+
+    - name: Extract frontend artifact
+      community.windows.win_unzip:
+        src: "{{ artifact_path }}"
+        dest: "{{ deploy_path }}"
+        delete_archive: false
+
+    - name: Inject environment-specific runtime config (env.js)
+      ansible.windows.win_copy:
+        content: |
+          window.__ENV = {
+            ENVIRONMENT: '{{ env_name | upper }}',
+            APP_VERSION: '{{ app_version }}',
+            API_URL: 'http://localhost:{{ api_port }}'
+          };
+        dest: "{{ deploy_path }}\\env.js"
+
+    - name: Start IIS Application Pool
+      community.windows.win_iis_webapppool:
+        name: "{{ app_pool_name }}"
+        state: started
+
+    - name: Restart IIS Web Site
+      community.windows.win_iis_website:
+        name: "{{ site_name }}"
+        state: restarted
+
+    - name: Verify Web Dashboard response
+      ansible.windows.win_uri:
+        url: "http://localhost:{{ target_port }}/"
+        method: GET
+        return_content: true
+        status_code: 200
+      register: web_resp
+      retries: 3
+      delay: 2
+      until: web_resp.status_code == 200
+
+    - name: Audit web deployment in PostgreSQL
+      community.general.postgresql_query:
+        db: inventory_db
+        login_host: localhost
+        login_user: nexora_admin
+        login_password: devops_secure_password_123
+        query: >
+          INSERT INTO deployments (application, version, environment, commit_sha, pipeline_id, status, completed_at, deployed_by)
+          VALUES ('inventory-web', '{{ app_version }}', '{{ env_name | upper }}', 'frontend-commit', 'web-pipe-001', 'SUCCESS', NOW(), 'ansible-automation');
+      delegate_to: localhost
