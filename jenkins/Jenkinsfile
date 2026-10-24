@@ -20,7 +20,7 @@ pipeline {
     stages {
         stage('Checkout & Validation') {
             steps {
-                echo "[CI/CD] Checking out ${params.APPLICATION} version${params.VERSION}"
+                echo "[CI/CD] Checking out ${params.APPLICATION} version ${params.VERSION}"
                 bat 'git status'
             }
         }
@@ -32,7 +32,7 @@ pipeline {
                     if (params.APPLICATION == 'inventory-api') {
                         bat """
                             dotnet tool restore || dotnet tool install --global dotnet-sonarscanner || echo "Sonar tool ready"
-                            dotnet sonarscanner begin /k:"inventory-api" /d:sonar.host.url="${SONAR_HOST}" /d:sonar.login="${SONAR_TOKEN}" /d:sonar.cs.opencover.reportsPaths="**/coverage.opencover.xml"
+                            dotnet sonarscanner begin /k:"inventory-api" /d:sonar.host.url="${SONAR_HOST}" /d:sonar.login="${SONAR_TOKEN}"
                             dotnet build "%BASE_DIR%\\applications\\inventory-api\\InventoryApi.csproj" -c Release -f net8.0
                             dotnet publish "%BASE_DIR%\\applications\\inventory-api\\InventoryApi.csproj" -c Release -f net8.0 -o "%BASE_DIR%\\applications\\inventory-api\\publish"
                             dotnet sonarscanner end /d:sonar.login="${SONAR_TOKEN}"
@@ -53,24 +53,22 @@ pipeline {
         stage('SonarQube Quality Gate Verification') {
             steps {
                 powershell '''
-                    $app =$env:APPLICATION
-                    $token =$env:SONAR_TOKEN
-                    Write-Host "[SONARQUBE] Polling Quality Gate status on $env:SONAR_HOST for$app..."
-                    
+                    $app = $env:APPLICATION
+                    $token = $env:SONAR_TOKEN
+                    Write-Host "[SONARQUBE] Polling Quality Gate status on $env:SONAR_HOST for $app..."
+
                     $auth = [Convert]::ToBase64String([Text.Encoding]::ASCII.GetBytes("${token}:"))
                     $headers = @{ Authorization = "Basic $auth" }
-                    
-                    # Wait briefly for SonarQube compute engine to process analysis
-                    Start-Sleep -Seconds 5
-                    
+                    Start-Sleep -Seconds 4
+
                     try {
                         $qgUrl = "$env:SONAR_HOST/api/qualitygates/project_status?projectKey=$app"
-                        $response = Invoke-RestMethod -Uri $qgUrl -Method Get -Headers$headers -TimeoutSec 15
-                        $status =$response.projectStatus.status
-                        
-                        Write-Host "[SONARQUBE] Computed Quality Gate Status: $status"
+                        $response = Invoke-RestMethod -Uri $qgUrl -Method Get -Headers $headers -TimeoutSec 15
+                        $status = $response.projectStatus.status
+
+                        Write-Host "[SONARQUBE] Live Computed Quality Gate Status: $status"
                         if ($status -ne "OK") {
-                            Write-Error "[QUALITY GATE FAILED] Strict Quality Gate not satisfied. Status: $status"
+                            Write-Error "[QUALITY GATE FAILED] Strict Quality Gate check failed. Status: $status"
                             exit 1
                         } else {
                             Write-Host "[QUALITY GATE PASSED] Quality Gate status verified: OK."
@@ -86,25 +84,47 @@ pipeline {
         stage('Security & SBOM Generation') {
             steps {
                 powershell '''
-                    $app = $env:APPLICATION$ver = $env:VERSION$targetDir = "$env:BASE_DIR\\artifacts\\$app"
-                    if (-not (Test-Path $targetDir)) { New-Item -ItemType Directory -Path $targetDir -Force }$deps = @()
+                    $app = $env:APPLICATION
+                    $ver = $env:VERSION
+                    $targetDir = "$env:BASE_DIR\\artifacts\\$app"
+                    if (-not (Test-Path $targetDir)) {
+                        New-Item -ItemType Directory -Path $targetDir -Force | Out-Null
+                    }
+
+                    $deps = @()
                     if ($app -eq "inventory-api") {
-                        $deps = @(
-                            @{ name = "Npgsql"; version = "8.0.2"; purl = "pkg:nuget/Npgsql@8.0.2" },
-                            @{ name = "Microsoft.AspNetCore.OpenApi"; version = "8.0.0"; purl = "pkg:nuget/Microsoft.AspNetCore.OpenApi@8.0.0" }
-                        )
+                        $projFile = "$env:BASE_DIR\\applications\\inventory-api\\InventoryApi.csproj"
+                        [xml]$xml = Get-Content $projFile
+                        foreach ($pkg in $xml.Project.ItemGroup.PackageReference) {
+                            $deps += @{
+                                name = $pkg.Include
+                                version = $pkg.Version
+                                purl = "pkg:nuget/$($pkg.Include)@$($pkg.Version)"
+                            }
+                        }
                     } elseif ($app -eq "reporting-service") {
-                        $deps = @(
-                            @{ name = "spring-boot-starter-web"; version = "3.2.4"; purl = "pkg:maven/org.springframework.boot/spring-boot-starter-web@3.2.4" },
-                            @{ name = "postgresql"; version = "42.7.2"; purl = "pkg:maven/org.postgresql/postgresql@42.7.2" },
-                            @{ name = "spring-boot-starter-actuator"; version = "3.2.4"; purl = "pkg:maven/org.springframework.boot/spring-boot-starter-actuator@3.2.4" }
-                        )
+                        $pomFile = "$env:BASE_DIR\\applications\\reporting-service\\pom.xml"
+                        [xml]$xml = Get-Content $pomFile
+                        foreach ($dep in $xml.project.dependencies.dependency) {
+                            $v = $dep.version
+                            if (-not $v) { $v = "3.2.4" }
+                            $deps += @{
+                                name = $dep.artifactId
+                                version = $v
+                                purl = "pkg:maven/$($dep.groupId)/$($dep.artifactId)@$v"
+                            }
+                        }
                     } elseif ($app -eq "inventory-web") {
-                        $pkgPath = "$env:BASE_DIR\\applications\\inventory-web\\package.json"
-                        if (Test-Path $pkgPath) {
-                            $pkg = Get-Content$pkgPath | ConvertFrom-Json
+                        $pkgFile = "$env:BASE_DIR\\applications\\inventory-web\\package.json"
+                        if (Test-Path $pkgFile) {
+                            $pkg = Get-Content $pkgFile | ConvertFrom-Json
                             if ($pkg.dependencies) {
-                                foreach ($prop in $pkg.dependencies.PSObject.Properties) {$deps += @{ name = $prop.Name; version =$prop.Value; purl = "pkg:npm/$($prop.Name)@$($prop.Value)" }
+                                foreach ($prop in $pkg.dependencies.PSObject.Properties) {
+                                    $deps += @{
+                                        name = $prop.Name
+                                        version = $prop.Value
+                                        purl = "pkg:npm/$($prop.Name)@$($prop.Value)"
+                                    }
                                 }
                             }
                         }
@@ -117,7 +137,7 @@ pipeline {
                         version = 1
                         metadata = @{
                             timestamp = (Get-Date -Format "yyyy-MM-ddTHH:mm:ssZ")
-                            component = @{ name = $app; version =$ver; type = "application" }
+                            component = @{ name = $app; version = $ver; type = "application" }
                         }
                         components = $deps
                     } | ConvertTo-Json -Depth 5
@@ -131,39 +151,47 @@ pipeline {
         stage('Package & Nexus Publish') {
             steps {
                 powershell '''
-                    $app = $env:APPLICATION$ver = $env:VERSION$sourceDir = "$env:BASE_DIR\\applications\\$app"
+                    $app = $env:APPLICATION
+                    $ver = $env:VERSION
+                    $sourceDir = "$env:BASE_DIR\\applications\\$app"
                     $artifactDir = "$env:BASE_DIR\\artifacts\\$app"
-                    if (-not (Test-Path $artifactDir)) { New-Item -ItemType Directory -Path$artifactDir -Force }
-                    
-                    $packageFile = "$artifactDir\\$app-$ver.zip"
+
+                    if (-not (Test-Path $artifactDir)) {
+                        New-Item -ItemType Directory -Path $artifactDir -Force | Out-Null
+                    }
+
                     if ($app -eq "reporting-service") {
                         $packageFile = "$artifactDir\\$app-$ver.jar"
-                        $builtJar = "$sourceDir\\target\\reporting-service-$ver.jar"
-                        if (-not (Test-Path $builtJar)) {
-                            $builtJar = Get-ChildItem "$sourceDir\\target\\*.jar" -Exclude "*.original" | Select-Object -First 1 -ExpandProperty FullName
+                        $expectedJar = "$sourceDir\\target\\reporting-service-$ver.jar"
+                        if (-not (Test-Path $expectedJar)) {
+                            Write-Error "[BUILD INTEGRITY ERROR] Expected artifact $expectedJar does not exist. Aborting packaging."
+                            exit 1
                         }
-                        Copy-Item $builtJar$packageFile -Force
+                        Copy-Item $expectedJar $packageFile -Force
                     } elseif ($app -eq "inventory-api") {
+                        $packageFile = "$artifactDir\\$app-$ver.zip"
                         Compress-Archive -Path "$sourceDir\\publish\\*" -DestinationPath $packageFile -Force
                     } elseif ($app -eq "inventory-web") {
+                        $packageFile = "$artifactDir\\$app-$ver.zip"
                         Compress-Archive -Path "$sourceDir\\dist\\*" -DestinationPath $packageFile -Force
                     }
-                    
+
                     if (Test-Path $packageFile) {
-                        $hash = (Get-FileHash -Path$packageFile -Algorithm SHA256).Hash
+                        $hash = (Get-FileHash -Path $packageFile -Algorithm SHA256).Hash
                         Set-Content -Path "$artifactDir\\$app-$ver.sha256" -Value $hash
-                        Write-Host "[PACKAGE] Packaged $packageFile (SHA256:$hash)"
-                        
-                        $fileName = [System.IO.Path]::GetFileName($packageFile)$nexusUri = "$env:NEXUS_URL/$app/$ver/$fileName"
+                        Write-Host "[PACKAGE] Packaged $packageFile (SHA256: $hash)"
+
+                        $fileName = [System.IO.Path]::GetFileName($packageFile)
+                        $nexusUri = "$env:NEXUS_URL/$app/$ver/$fileName"
                         Write-Host "[NEXUS] Publishing artifact to $nexusUri..."
                         try {
                             $auth = [Convert]::ToBase64String([Text.Encoding]::ASCII.GetBytes("$($env:NEXUS_CREDS_USR):$($env:NEXUS_CREDS_PSW)"))
                             $headers = @{ Authorization = "Basic $auth" }
-                            Invoke-RestMethod -Uri $nexusUri -Method Put -InFile $packageFile -Headers$headers
+                            Invoke-RestMethod -Uri $nexusUri -Method Put -InFile $packageFile -Headers $headers
                             Write-Host "[NEXUS UPLOAD SUCCESS] Artifact uploaded successfully."
                         } catch {
                             if ($_.Exception.Response.StatusCode.value__ -eq 400) {
-                                Write-Host "[NEXUS IMMUTABILITY] Version $ver already published in Nexus immutable release repository."
+                                Write-Host "[NEXUS IMMUTABILITY] Version $ver already published in Nexus repository."
                             } else {
                                 Write-Error "[NEXUS UPLOAD FAILED] $_"
                                 exit 1
@@ -180,9 +208,9 @@ pipeline {
         stage('Ansible Orchestrated Deployment') {
             steps {
                 script {
-                    echo "[ANSIBLE] Executing immutable promotion from Nexus via devopsctl"
+                    echo "[ANSIBLE] Executing deployment for ${params.APPLICATION} via devopsctl"
                     bat """
-                        wsl.exe bash -c "cd /mnt/c/nexora-devops-platform && ./cli/devopsctl/devopsctl deploy ${params.APPLICATION}${params.VERSION} --env ${params.TARGET_ENV.toLowerCase()} --simulate-failure${params.SIMULATE_FAILURE}"
+                        wsl.exe bash -c "cd /mnt/c/nexora-devops-platform && ./cli/devopsctl/devopsctl deploy '${params.APPLICATION}' '${params.VERSION}' --env '${params.TARGET_ENV.toLowerCase()}' --simulate-failure '${params.SIMULATE_FAILURE}'"
                     """
                 }
             }
@@ -191,9 +219,9 @@ pipeline {
         stage('Health Verification & Automated Recovery') {
             steps {
                 powershell '''
-                    $app =$env:APPLICATION
-                    $envName =$env:TARGET_ENV.ToLower()
-                    
+                    $app = $env:APPLICATION
+                    $envName = $env:TARGET_ENV.ToLower()
+
                     if ($app -eq "reporting-service") {
                         $url = "http://localhost:8301/health"
                     } elseif ($app -eq "inventory-web") {
@@ -215,18 +243,18 @@ pipeline {
                         }
                         $url = "http://localhost:$port/health"
                     }
-                    
+
                     Write-Host "[HEALTH CHECK] Probing deployed instance: $url..."
                     try {
-                        $response = Invoke-RestMethod -Uri$url -Method Get -TimeoutSec 5
+                        $response = Invoke-RestMethod -Uri $url -Method Get -TimeoutSec 5
                         Write-Host "[HEALTH VERIFIED] Application is healthy: OK"
                     } catch {
                         Write-Warning "[HEALTH FAILED] Target failed health check. Triggering AUTOMATED ROLLBACK via devopsctl..."
-                        wsl.exe bash -c "cd /mnt/c/nexora-devops-platform && ./cli/devopsctl/devopsctl rollback $app --env$envName --to-version 1.4.1"
-                        
+                        wsl.exe bash -c "cd /mnt/c/nexora-devops-platform && ./cli/devopsctl/devopsctl rollback '$app' --env '$envName' --to-version '1.4.1'"
+
                         Write-Host "[ROLLBACK VERIFICATION] Probing restored instance: $url..."
                         Start-Sleep -Seconds 3
-                        $recoveryResponse = Invoke-RestMethod -Uri$url -Method Get -TimeoutSec 5
+                        $recoveryResponse = Invoke-RestMethod -Uri $url -Method Get -TimeoutSec 5
                         Write-Host "[ROLLBACK VERIFIED] Application successfully restored to previous stable release."
                         Write-Error "[PIPELINE TERMINATION] Release rejected due to failed health check. Automated rollback verified."
                         exit 1
@@ -241,10 +269,10 @@ pipeline {
             echo "[NOTIFICATION] Pipeline execution finished."
         }
         success {
-            echo "[NOTIFICATION] DEPLOYMENT_SUCCESS: ${params.APPLICATION} v${params.VERSION} verified healthy on${params.TARGET_ENV}"
+            echo "[NOTIFICATION] DEPLOYMENT_SUCCESS: ${params.APPLICATION} v${params.VERSION} verified healthy on ${params.TARGET_ENV}"
         }
         failure {
-            echo "[NOTIFICATION] DEPLOYMENT_REJECTED: Health check failed; automated rollback triggered and verified."
+            echo "[NOTIFICATION] DEPLOYMENT_REJECTED: Health check failed; automated recovery executed."
         }
     }
 }

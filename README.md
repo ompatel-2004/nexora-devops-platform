@@ -221,8 +221,8 @@ Open an elevated **PowerShell** prompt (**Run as Administrator**):
 3. **Configure WinRM for Ansible Automation**:
    ```powershell
    winrm quickconfig -q
-   winrm set winrm/config/service/auth '@{Basic="true"}'
-   winrm set winrm/config/service '@{AllowUnencrypted="true"}'
+   winrm set winrm/config/service/auth '@{Basic="false"}'
+   winrm set winrm/config/service '@{AllowUnencrypted="false"}'
    ```
 
 ### Step B: WSL2 Linux Control Plane Configuration

@@ -30,7 +30,7 @@ case "${COMMAND}" in
         shift 2 || usage
         ENV="dev"
         SIMULATE="false"
-        
+
         while [[ $# -gt 0 ]]; do
             case "$1" in
                 --env) ENV="${2:-dev}"; shift 2 ;;
@@ -39,7 +39,6 @@ case "${COMMAND}" in
             esac
         done
 
-        # Select proper playbook per application
         case "${APP}" in
             inventory-api) PLAYBOOK="${ANSIBLE_DIR}/playbooks/deploy_api.yml" ;;
             inventory-web) PLAYBOOK="${ANSIBLE_DIR}/playbooks/deploy_web.yml" ;;
@@ -61,12 +60,12 @@ case "${COMMAND}" in
         while [[ $# -gt 0 ]]; do
             case "$1" in
                 --env) ENV="${2:-dev}"; shift 2 ;;
-                --to-version) TO_VERSION="${2:-}"; shift 2 ;;
+                --to-version) TO_VERSION="${2:-1.4.1}"; shift 2 ;;
                 *) shift ;;
             esac
         done
 
-        echo "[devopsctl] Invoking dedicated rollback workflow for ${APP} on ${ENV}"
+        echo "[devopsctl] Invoking dedicated rollback workflow for ${APP} on ${ENV} to v${TO_VERSION}"
         ansible-playbook -i "${ANSIBLE_DIR}/inventory.ini" "${ANSIBLE_DIR}/playbooks/rollback.yml" \
             -e "application=${APP}" -e "env=${ENV}" -e "rollback_to=${TO_VERSION}"
         ;;
@@ -82,15 +81,17 @@ case "${COMMAND}" in
 
     verify-backup)
         echo "[devopsctl] Running ephemeral backup verification..."
-        LATEST_BACKUP=$(ls -t "${BASE_DIR}/database/backups"/*.sql 2>/dev/null | head -n 1)
+        LATEST_BACKUP=$(ls -t "${BASE_DIR}/database/backups"/*.sql 2>/dev/null | head -n 1 || true)
         if [[ -z "${LATEST_BACKUP}" ]]; then
             echo "[devopsctl] No backups found to verify."; exit 1
         fi
-        psql -h "${DB_HOST:-localhost}" -U "${DB_USER:-nexora_admin}" -c "DROP DATABASE IF EXISTS inventory_verify_temp;"
-        psql -h "${DB_HOST:-localhost}" -U "${DB_USER:-nexora_admin}" -c "CREATE DATABASE inventory_verify_temp;"
-        psql -h "${DB_HOST:-localhost}" -U "${DB_USER:-nexora_admin}" -d inventory_verify_temp -f "${LATEST_BACKUP}" > /dev/null
-        COUNT=$(psql -h "${DB_HOST:-localhost}" -U "${DB_USER:-nexora_admin}" -d inventory_verify_temp -t -A -c "SELECT COUNT(*) FROM products;")
-        psql -h "${DB_HOST:-localhost}" -U "${DB_USER:-nexora_admin}" -c "DROP DATABASE inventory_verify_temp;"
+        
+        # Connect to maintenance database 'postgres' to avoid dropping the active database
+        psql -h "${DB_HOST:-localhost}" -p "${DB_PORT:-5432}" -U "${DB_USER:-nexora_admin}" -d postgres -c "DROP DATABASE IF EXISTS inventory_verify_temp;"
+        psql -h "${DB_HOST:-localhost}" -p "${DB_PORT:-5432}" -U "${DB_USER:-nexora_admin}" -d postgres -c "CREATE DATABASE inventory_verify_temp;"
+        psql -h "${DB_HOST:-localhost}" -p "${DB_PORT:-5432}" -U "${DB_USER:-nexora_admin}" -d inventory_verify_temp -f "${LATEST_BACKUP}" > /dev/null
+        COUNT=$(psql -h "${DB_HOST:-localhost}" -p "${DB_PORT:-5432}" -U "${DB_USER:-nexora_admin}" -d inventory_verify_temp -t -A -c "SELECT COUNT(*) FROM products;")
+        psql -h "${DB_HOST:-localhost}" -p "${DB_PORT:-5432}" -U "${DB_USER:-nexora_admin}" -d postgres -c "DROP DATABASE inventory_verify_temp;"
         echo "[devopsctl] Verified ${COUNT} products in backup. Status: SUCCESS"
         ;;
 
