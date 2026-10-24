@@ -1,0 +1,1 @@
+/mnt/c/nexora-devops-platform/scripts/failure-simulation/simulate-failure.sh

@@ -44,19 +44,19 @@
     ]
   },
   "packageFolders": {
-    "C:\\Users\\HP\\.nuget\\packages\\": {}
+    "C:\\WINDOWS\\system32\\config\\systemprofile\\.nuget\\packages\\": {}
   },
   "project": {
-    "version": "1.0.0",
+    "version": "1.4.2",
     "restore": {
       "projectUniqueName": "C:\\nexora-devops-platform\\applications\\inventory-api\\InventoryApi.csproj",
       "projectName": "InventoryApi",
       "projectPath": "C:\\nexora-devops-platform\\applications\\inventory-api\\InventoryApi.csproj",
-      "packagesPath": "C:\\Users\\HP\\.nuget\\packages\\",
+      "packagesPath": "C:\\WINDOWS\\system32\\config\\systemprofile\\.nuget\\packages\\",
       "outputPath": "C:\\nexora-devops-platform\\applications\\inventory-api\\obj\\",
       "projectStyle": "PackageReference",
       "configFilePaths": [
-        "C:\\Users\\HP\\AppData\\Roaming\\NuGet\\NuGet.Config"
+        "C:\\WINDOWS\\system32\\config\\systemprofile\\AppData\\Roaming\\NuGet\\NuGet.Config"
       ],
       "originalTargetFrameworks": [
         "net10.0"

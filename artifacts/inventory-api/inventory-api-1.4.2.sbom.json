@@ -1,0 +1,12 @@
+{
+    "bomFormat":  "CycloneDX",
+    "specVersion":  "1.5",
+    "version":  1,
+    "metadata":  {
+                     "component":  {
+                                       "name":  "inventory-api",
+                                       "version":  "1.4.2",
+                                       "type":  "application"
+                                   }
+                 }
+}

@@ -35,3 +35,16 @@ C:\nexora-devops-platform\applications\inventory-api\bin\Release\net10.0\publish
 C:\nexora-devops-platform\applications\inventory-api\bin\Release\net10.0\publish\InventoryApi.deps.json
 C:\nexora-devops-platform\applications\inventory-api\bin\Release\net10.0\publish\InventoryApi.runtimeconfig.json
 C:\nexora-devops-platform\applications\inventory-api\bin\Release\net10.0\publish\InventoryApi.staticwebassets.endpoints.json
+C:\nexora-devops-platform\applications\inventory-api\bin\Release\net10.0\publish\publish\web.config
+C:\nexora-devops-platform\applications\inventory-api\bin\Release\net10.0\publish\publish\appsettings.Development.json
+C:\nexora-devops-platform\applications\inventory-api\bin\Release\net10.0\publish\publish\appsettings.json
+C:\nexora-devops-platform\applications\inventory-api\bin\Release\net10.0\publish\publish\InventoryApi.deps.json
+C:\nexora-devops-platform\applications\inventory-api\bin\Release\net10.0\publish\publish\InventoryApi.runtimeconfig.json
+C:\nexora-devops-platform\applications\inventory-api\bin\Release\net10.0\publish\publish\InventoryApi.staticwebassets.endpoints.json
+C:\nexora-devops-platform\applications\inventory-api\obj\Release\net10.0\InventoryApi.sourcelink.json
+C:\nexora-devops-platform\applications\inventory-api\bin\Release\net10.0\publish\publish\publish\web.config
+C:\nexora-devops-platform\applications\inventory-api\bin\Release\net10.0\publish\publish\publish\appsettings.Development.json
+C:\nexora-devops-platform\applications\inventory-api\bin\Release\net10.0\publish\publish\publish\appsettings.json
+C:\nexora-devops-platform\applications\inventory-api\bin\Release\net10.0\publish\publish\publish\InventoryApi.deps.json
+C:\nexora-devops-platform\applications\inventory-api\bin\Release\net10.0\publish\publish\publish\InventoryApi.runtimeconfig.json
+C:\nexora-devops-platform\applications\inventory-api\bin\Release\net10.0\publish\publish\publish\InventoryApi.staticwebassets.endpoints.json

@@ -6,7 +6,7 @@
   "compilationOptions": {},
   "targets": {
     ".NETCoreApp,Version=v10.0": {
-      "InventoryApi/1.0.0": {
+      "InventoryApi/1.4.2": {
         "dependencies": {
           "Npgsql": "10.0.3"
         },
@@ -25,7 +25,7 @@
     }
   },
   "libraries": {
-    "InventoryApi/1.0.0": {
+    "InventoryApi/1.4.2": {
       "type": "project",
       "serviceable": false,
       "sha512": ""
