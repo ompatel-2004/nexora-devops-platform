@@ -19,6 +19,7 @@
     <properties>
         <java.version>17</java.version>
         <sonar.projectKey>reporting-service</sonar.projectKey>
+        <sonar.projectName>reporting-service</sonar.projectName>
     </properties>
 
     <dependencies>
@@ -47,6 +48,11 @@
             <plugin>
                 <groupId>org.springframework.boot</groupId>
                 <artifactId>spring-boot-maven-plugin</artifactId>
+            </plugin>
+            <plugin>
+                <groupId>org.sonarsource.scanner.maven</groupId>
+                <artifactId>sonar-maven-plugin</artifactId>
+                <version>3.11.0.3922</version>
             </plugin>
         </plugins>
     </build>
