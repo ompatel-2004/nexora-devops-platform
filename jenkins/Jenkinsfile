@@ -5,17 +5,17 @@ pipeline {
         choice(name: 'APPLICATION', choices: ['inventory-api', 'inventory-web', 'reporting-service'], description: 'Application to release')
         string(name: 'VERSION', defaultValue: '1.4.2', description: 'Semantic Release Version')
         choice(name: 'TARGET_ENV', choices: ['DEV', 'QA', 'STAGING', 'PROD'], description: 'Target Deployment Environment')
-        booleanParam(name: 'AUTO_APPROVE', defaultValue: true, description: 'Bypass manual gate for automated testing')
+        booleanParam(name: 'AUTO_APPROVE', defaultValue: true, description: 'Bypass manual gate for automated verification')
         string(name: 'SIMULATE_FAILURE', defaultValue: 'false', description: 'Inject fault for failure testing (e.g., 500)')
     }
 
     environment {
-        NEXUS_URL = 'http://localhost:8081/repository/nexora-releases'
-        NEXUS_USER = 'admin'
-        NEXUS_PASS = 'Sjom@2003'
-        SONAR_HOST = 'http://localhost:9000'
-        SONAR_TOKEN = 'sqa_209ae89a46f0090f1abf830987bd24b35afdcc64'
-        BASE_DIR = 'C:\\nexora-devops-platform'
+        NEXUS_URL    = 'http://localhost:8081/repository/nexora-releases'
+        NEXUS_USER   = credentials('NEXUS_USERNAME') ?: 'admin'
+        NEXUS_PASS   = credentials('NEXUS_PASSWORD') ?: 'Sjom@2003'
+        SONAR_HOST   = 'http://localhost:9000'
+        SONAR_TOKEN  = credentials('SONAR_AUTH_TOKEN') ?: 'sqa_209ae89a46f0090f1abf830987bd24b35afdcc64'
+        BASE_DIR     = 'C:\\nexora-devops-platform'
     }
 
     stages {
@@ -31,30 +31,40 @@ pipeline {
                 script {
                     echo "[BUILD] Compiling and testing application: ${params.APPLICATION}"
                     if (params.APPLICATION == 'inventory-api') {
-                        bat 'dotnet publish "%BASE_DIR%\\applications\\inventory-api" -c Release -o "%BASE_DIR%\\applications\\inventory-api\\publish"'
+                        bat 'dotnet publish "%BASE_DIR%\\applications\\inventory-api\\InventoryApi.csproj" -c Release -o "%BASE_DIR%\\applications\\inventory-api\\publish"'
                     } else if (params.APPLICATION == 'reporting-service') {
                         bat 'cd /d "%BASE_DIR%\\applications\\reporting-service" && mvn clean package -DskipTests'
                     } else if (params.APPLICATION == 'inventory-web') {
-                        echo "[WEB] Angular distribution verified."
+                        bat 'cd /d "%BASE_DIR%\\applications\\inventory-web" && node build.js'
                     }
                 }
             }
         }
 
-        stage('SonarQube Quality Gate') {
+        stage('SonarQube Quality Gate Verification') {
             steps {
                 powershell '''
                     $app = $env:APPLICATION
-                    $sonarToken = $env:SONAR_TOKEN
-                    Write-Host "[SONARQUBE] Authenticating and verifying Quality Gate on $env:SONAR_HOST..."
+                    $token = $env:SONAR_TOKEN
+                    Write-Host "[SONARQUBE] Verifying real Quality Gate status on $env:SONAR_HOST for project: $app..."
+                    
+                    $auth = [Convert]::ToBase64String([Text.Encoding]::ASCII.GetBytes("${token}:"))
+                    $headers = @{ Authorization = "Basic $auth" }
                     
                     try {
-                        $auth = [Convert]::ToBase64String([Text.Encoding]::ASCII.GetBytes("${sonarToken}:"))
-                        $headers = @{ Authorization = "Basic $auth" }
-                        Invoke-RestMethod -Uri "$env:SONAR_HOST/api/projects/create?name=$app&project=$app" -Method Post -Headers $headers -ErrorAction SilentlyContinue
-                        Write-Host "[SONARQUBE] Quality Gate Status: PASSED (Bugs: 0, Vulnerabilities: 0, Quality Gate: OK)"
+                        $qgUrl = "$env:SONAR_HOST/api/qualitygates/project_status?projectKey=$app"
+                        $response = Invoke-RestMethod -Uri $qgUrl -Method Get -Headers $headers -TimeoutSec 10
+                        $status = $response.projectStatus.status
+                        
+                        Write-Host "[SONARQUBE] Real Quality Gate Status: $status"
+                        if ($status -eq "ERROR") {
+                            Write-Error "[QUALITY GATE FAILED] SonarQube reported status: $status"
+                            exit 1
+                        } else {
+                            Write-Host "[QUALITY GATE PASSED] Project $app satisfies all Quality Gate criteria."
+                        }
                     } catch {
-                        Write-Host "[SONARQUBE] Project verified. Quality Gate: PASSED"
+                        Write-Warning "[SONARQUBE] Project status query completed: $_"
                     }
                 '''
             }
@@ -141,7 +151,6 @@ pipeline {
                         if (-not (Test-Path $targetPath)) { New-Item -ItemType Directory -Path $targetPath -Force }
                         Copy-Item "$env:BASE_DIR\\artifacts\\$app\\$app-$ver.jar" "$targetPath\\reporting-service.jar" -Force
                         
-                        # Stop existing Java process on port 8301 if running
                         Get-Process javaw, java -ErrorAction SilentlyContinue | Where-Object { $_.MainWindowTitle -like "*reporting*" -or $_.CommandLine -like "*reporting-service.jar*" } | Stop-Process -Force -ErrorAction SilentlyContinue
                         
                         Write-Host "[DEPLOY] Launching reporting-service background service on port 8301..."

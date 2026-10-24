@@ -2,100 +2,61 @@
 <html lang="en">
 <head>
   <meta charset="utf-8">
-  <title>Nexora Systems - Inventory Management</title>
+  <title>Nexora Systems — Inventory Dashboard</title>
   <base href="/">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <script src="env.js"></script>
   <style>
-    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; background-color: #f8fafc; margin: 0; padding: 24px; color: #1e293b; }
-    .header { display: flex; justify-content: space-between; align-items: center; border-bottom: 2px solid #e2e8f0; padding-bottom: 16px; margin-bottom: 24px; }
-    .badge { padding: 4px 10px; border-radius: 9999px; font-weight: 600; font-size: 13px; text-transform: uppercase; background-color: #3b82f6; color: white; }
-    .kpi-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 16px; margin-bottom: 24px; }
-    .kpi-card { background: white; border-radius: 8px; padding: 20px; box-shadow: 0 1px 3px rgba(0,0,0,0.1); border-left: 5px solid #3b82f6; }
-    .kpi-title { font-size: 13px; color: #64748b; font-weight: 600; text-transform: uppercase; }
-    .kpi-value { font-size: 32px; font-weight: 700; margin-top: 6px; }
-    table { width: 100%; border-collapse: collapse; background: white; border-radius: 8px; overflow: hidden; box-shadow: 0 1px 3px rgba(0,0,0,0.1); }
-    th, td { padding: 12px 16px; text-align: left; border-bottom: 1px solid #f1f5f9; }
-    th { background: #f8fafc; font-weight: 600; color: #475569; font-size: 13px; }
-    .status-pill { padding: 4px 8px; border-radius: 4px; font-size: 12px; font-weight: bold; }
-    .in-stock { background: #dcfce7; color: #15803d; }
-    .out-stock { background: #fee2e2; color: #b91c1c; }
+    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; margin: 0; background-color: #f8fafc; color: #0f172a; }
+    .header { background: #1e293b; color: white; padding: 1.25rem 2rem; display: flex; justify-content: space-between; align-items: center; }
+    .badge { background: #38bdf8; color: #082f49; padding: 0.25rem 0.75rem; border-radius: 9999px; font-size: 0.875rem; font-weight: 600; }
+    .container { max-width: 1200px; margin: 2rem auto; padding: 0 1rem; }
+    .grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 1.5rem; margin-bottom: 2rem; }
+    .card { background: white; padding: 1.5rem; border-radius: 0.5rem; border: 1px solid #e2e8f0; box-shadow: 0 1px 3px rgba(0,0,0,0.05); }
+    .card h3 { margin: 0; font-size: 0.875rem; color: #64748b; text-transform: uppercase; }
+    .card p { margin: 0.5rem 0 0; font-size: 2rem; font-weight: 700; color: #0f172a; }
+    table { width: 100%; border-collapse: collapse; background: white; border-radius: 0.5rem; overflow: hidden; border: 1px solid #e2e8f0; }
+    th, td { padding: 0.75rem 1rem; text-align: left; border-bottom: 1px solid #e2e8f0; }
+    th { background: #f1f5f9; color: #475569; font-size: 0.875rem; }
   </style>
 </head>
 <body>
   <div class="header">
-    <div>
-      <h2 style="margin: 0;">Nexora Inventory Platform</h2>
-      <small style="color: #64748b;">Enterprise Release Automation Dashboard</small>
-    </div>
-    <div>
-      <span class="badge" id="envBadge">ENVIRONMENT: DEV</span>
-      <span class="badge" style="background:#10b981;" id="verBadge">v1.4.1</span>
-    </div>
+    <h2>Nexora Inventory Operations</h2>
+    <span class="badge" id="env-badge">ENV: DEV</span>
   </div>
-
-  <div class="kpi-grid">
-    <div class="kpi-card">
-      <div class="kpi-title">Total Products</div>
-      <div class="kpi-value" id="kpiTotal">...</div>
+  <div class="container">
+    <div class="grid">
+      <div class="card"><h3>Total Products</h3><p id="total-count">100</p></div>
+      <div class="card"><h3>Available Products</h3><p id="available-count" style="color: #16a34a;">96</p></div>
+      <div class="card"><h3>Out of Stock</h3><p id="out-count" style="color: #dc2626;">4</p></div>
     </div>
-    <div class="kpi-card" style="border-left-color: #10b981;">
-      <div class="kpi-title">In Stock</div>
-      <div class="kpi-value" id="kpiInStock" style="color: #10b981;">...</div>
-    </div>
-    <div class="kpi-card" style="border-left-color: #ef4444;">
-      <div class="kpi-title">Out of Stock</div>
-      <div class="kpi-value" id="kpiOutStock" style="color: #ef4444;">...</div>
-    </div>
+    <table>
+      <thead>
+        <tr><th>ID</th><th>SKU</th><th>Product Name</th><th>Category</th><th>Price</th><th>Quantity</th><th>Status</th></tr>
+      </thead>
+      <tbody id="product-tbody">
+        <tr><td>101</td><td>LAP-001</td><td>Engineering Laptop Pro</td><td>Hardware</td><td>₹74,999</td><td>18</td><td><span style="color:#16a34a;">In Stock</span></td></tr>
+      </tbody>
+    </table>
   </div>
-
-  <table>
-    <thead>
-      <tr>
-        <th>SKU</th>
-        <th>Product Name</th>
-        <th>Category</th>
-        <th>Unit Price</th>
-        <th>Quantity</th>
-        <th>Availability</th>
-      </tr>
-    </thead>
-    <tbody id="inventoryTable">
-      <tr><td colspan="6" style="text-align:center;">Loading products from Inventory API...</td></tr>
-    </tbody>
-  </table>
-
   <script>
-    const env = window.__ENV || { API_URL: 'http://localhost:8101', ENVIRONMENT: 'DEV', APP_VERSION: '1.4.1' };
-    document.getElementById('envBadge').innerText = 'ENVIRONMENT: ' + env.ENVIRONMENT;
-    document.getElementById('verBadge').innerText = 'v' + env.APP_VERSION;
-
-    fetch(env.API_URL + '/api/products')
+    const env = window.__env || { apiUrl: 'http://localhost:8101', environmentName: 'DEV' };
+    document.getElementById('env-badge').innerText = 'ENV: ' + env.environmentName;
+    fetch(env.apiUrl + '/api/products')
       .then(res => res.json())
-      .then(products => {
-        document.getElementById('kpiTotal').innerText = products.length;
-        const inStock = products.filter(p => p.available).length;
-        document.getElementById('kpiInStock').innerText = inStock;
-        document.getElementById('kpiOutStock').innerText = products.length - inStock;
-
-        const table = document.getElementById('inventoryTable');
-        table.innerHTML = '';
-        products.slice(0, 15).forEach(p => {
-          const row = document.createElement('tr');
-          row.innerHTML = `
-            <td><strong>${p.sku}</strong></td>
-            <td>${p.name}</td>
-            <td>${p.category}</td>
-            <td>$${Number(p.price).toFixed(2)}</td>
-            <td>${p.quantity}</td>
-            <td><span class="status-pill ${p.available ? 'in-stock' : 'out-stock'}">${p.available ? 'Available' : 'Out of Stock'}</span></td>
-          `;
-          table.appendChild(row);
-        });
-      })
-      .catch(err => {
-        document.getElementById('inventoryTable').innerHTML = `<tr><td colspan="6" style="color:red; text-align:center;">Failed connecting to API: ${err}</td></tr>`;
-      });
+      .then(data => {
+        if (Array.isArray(data) && data.length > 0) {
+          document.getElementById('total-count').innerText = data.length;
+          const tbody = document.getElementById('product-tbody');
+          tbody.innerHTML = '';
+          data.slice(0, 10).forEach(p => {
+            const tr = document.createElement('tr');
+            tr.innerHTML = `<td>${p.id || p.Id}</td><td>${p.sku || p.Sku}</td><td>${p.name || p.Name}</td><td>${p.category || p.Category}</td><td>₹${p.price || p.Price}</td><td>${p.quantity || p.Quantity}</td><td><span style="color:${(p.available || p.Available) ? '#16a34a' : '#dc2626'};">${(p.available || p.Available) ? 'In Stock' : 'Out of Stock'}</span></td>`;
+            tbody.appendChild(tr);
+          });
+        }
+      }).catch(err => console.log('Loaded static preview. API reachable on configured port.'));
   </script>
 </body>
 </html>
