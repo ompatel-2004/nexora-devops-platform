@@ -71,23 +71,24 @@ pipeline {
                             set "DOTNET_TOOLS=%USERPROFILE%\\.dotnet\\tools"
                             set "PATH=%DOTNET_TOOLS%;%PATH%"
 
-                            echo [SONARQUBE] Checking dotnet-sonarscanner...
+                            echo [SONARQUBE] Preparing compatible SonarScanner for SonarQube 9.9...
 
-                            if not exist "%DOTNET_TOOLS%\\dotnet-sonarscanner.exe" (
-                                echo [SONARQUBE] SonarScanner not found. Installing...
-                                dotnet tool install --global dotnet-sonarscanner
-                                if errorlevel 1 (
-                                    echo [SONARQUBE ERROR] Failed to install dotnet-sonarscanner.
-                                    exit /b 1
-                                )
-                            ) else (
-                                echo [SONARQUBE] SonarScanner already installed.
-                            )
+                            dotnet tool uninstall --global dotnet-sonarscanner >nul 2>&1
 
-                            if not exist "%DOTNET_TOOLS%\\dotnet-sonarscanner.exe" (
-                                echo [SONARQUBE ERROR] dotnet-sonarscanner executable is still missing.
+                            dotnet tool install --global dotnet-sonarscanner --version 5.15.1
+
+                            if errorlevel 1 (
+                                echo [SONARQUBE ERROR] Failed to install dotnet-sonarscanner 5.15.1.
                                 exit /b 1
                             )
+
+                            if not exist "%DOTNET_TOOLS%\\dotnet-sonarscanner.exe" (
+                                echo [SONARQUBE ERROR] dotnet-sonarscanner executable was not found.
+                                exit /b 1
+                            )
+
+                            echo [SONARQUBE] Scanner version:
+                            dotnet sonarscanner --version
 
                             echo [SONARQUBE] Starting analysis...
 
@@ -98,6 +99,17 @@ pipeline {
 
                             if errorlevel 1 (
                                 echo [SONARQUBE ERROR] SonarScanner begin failed.
+                                exit /b 1
+                            )
+
+                            echo [BUILD] Cleaning previous build output...
+
+                            dotnet clean "%BASE_DIR%\\applications\\inventory-api\\InventoryApi.csproj" ^
+                                -c Release ^
+                                -f net8.0
+
+                            if errorlevel 1 (
+                                echo [BUILD ERROR] dotnet clean failed.
                                 exit /b 1
                             )
 
@@ -162,16 +174,30 @@ pipeline {
 
                         bat '''
                             @echo off
+
+                            set "DOTNET_TOOLS=%USERPROFILE%\\.dotnet\\tools"
+                            set "PATH=%DOTNET_TOOLS%;%PATH%"
+
                             cd /d "%BASE_DIR%\\applications\\reporting-service"
 
-                            mvn clean test package ^
-                                sonar:sonar ^
+                            echo [BUILD] Running Maven clean test package...
+
+                            mvn clean test package
+
+                            if errorlevel 1 (
+                                echo [BUILD ERROR] reporting-service Maven build/test/package failed.
+                                exit /b 1
+                            )
+
+                            echo [SONARQUBE] Running Maven SonarQube analysis...
+
+                            mvn sonar:sonar ^
                                 -Dsonar.host.url="%SONAR_HOST%" ^
                                 -Dsonar.login="%SONAR_TOKEN%" ^
                                 -Dsonar.projectKey=reporting-service
 
                             if errorlevel 1 (
-                                echo [BUILD ERROR] reporting-service build/test/SonarQube failed.
+                                echo [SONARQUBE ERROR] reporting-service SonarQube analysis failed.
                                 exit /b 1
                             )
 
@@ -182,6 +208,7 @@ pipeline {
 
                         bat '''
                             @echo off
+
                             cd /d "%BASE_DIR%\\applications\\inventory-web"
 
                             if exist package-lock.json (
@@ -196,6 +223,8 @@ pipeline {
                                 echo [NPM ERROR] Dependency installation failed.
                                 exit /b 1
                             )
+
+                            echo [BUILD] Building inventory-web...
 
                             npm run build
 
@@ -594,7 +623,7 @@ pipeline {
 
                             echo [ANSIBLE] Starting WSL deployment...
 
-                            wsl.exe bash -c "export ANSIBLE_USER=\"${ANSIBLE_USER}\" && export ANSIBLE_PASSWORD=\"${ANSIBLE_PASSWORD}\" && export NEXUS_USER=\"${NEXUS_CREDS_USR}\" && export NEXUS_PASSWORD=\"${NEXUS_CREDS_PSW}\" && export DB_PASSWORD=\"${DB_PASSWORD}\" && cd /mnt/c/nexora-devops-platform && ./cli/devopsctl/devopsctl deploy \"${APPLICATION}\" \"${VERSION}\" --env \"${TARGET_ENV}\" --simulate-failure \"${SIMULATE_FAILURE}\""
+                            wsl.exe bash -c "export ANSIBLE_USER=\"%ANSIBLE_USER%\" && export ANSIBLE_PASSWORD=\"%ANSIBLE_PASSWORD%\" && export NEXUS_USER=\"%NEXUS_CREDS_USR%\" && export NEXUS_PASSWORD=\"%NEXUS_CREDS_PSW%\" && export DB_PASSWORD=\"%DB_PASSWORD%\" && cd /mnt/c/nexora-devops-platform && ./cli/devopsctl/devopsctl deploy \"%APPLICATION%\" \"%VERSION%\" --env \"%TARGET_ENV%\" --simulate-failure \"%SIMULATE_FAILURE%\""
 
                             if errorlevel 1 (
                                 echo [ANSIBLE ERROR] Deployment command failed.
@@ -677,6 +706,7 @@ pipeline {
                                 Write-Host "[HEALTH VERIFIED] Application is healthy."
 
                                 if ($app -eq "inventory-api") {
+
                                     if ($response.status -ne "healthy") {
                                         throw "Inventory API health status is not healthy."
                                     }
