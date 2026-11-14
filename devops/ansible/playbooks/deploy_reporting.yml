@@ -1,17 +1,28 @@
 ---
 - name: Deploy Nexora Reporting Service from Nexus
   hosts: windows
+
   vars:
     app_name: "reporting-service"
     app_version: "{{ version | default('1.4.2') }}"
     target_env: "{{ env | default('dev') | lower }}"
+
     nexus_base: "{{ lookup('env', 'NEXUS_URL') | default('http://localhost:8081/repository/nexora-releases', true) }}"
     nexus_user: "{{ lookup('env', 'NEXUS_USER') | default('admin', true) }}"
     nexus_pass: "{{ lookup('env', 'NEXUS_PASSWORD') | default('', true) }}"
+
+    target_port: "{{ 8301 if target_env == 'dev' else (8302 if target_env == 'qa' else (8303 if target_env == 'staging' else 8304)) }}"
+
     deploy_dir: "C:\\nexora-devops-platform\\deployments\\reporting-service\\{{ target_env }}"
+
     artifact_filename: "reporting-service-{{ app_version }}.jar"
+    checksum_filename: "reporting-service-{{ app_version }}.sha256"
+
     download_dest: "C:\\nexora-devops-platform\\artifacts\\reporting-service\\{{ artifact_filename }}"
+    checksum_dest: "C:\\nexora-devops-platform\\artifacts\\reporting-service\\{{ checksum_filename }}"
+
   tasks:
+
     - name: Ensure deployment and artifact directories exist
       ansible.windows.win_file:
         path: "{{ item }}"
@@ -27,7 +38,50 @@
         url_username: "{{ nexus_user }}"
         url_password: "{{ nexus_pass }}"
         force: yes
-      ignore_errors: yes
+
+    - name: Retrieve release SHA256 checksum from Nexus
+      ansible.windows.win_get_url:
+        url: "{{ nexus_base }}/{{ app_name }}/{{ app_version }}/{{ checksum_filename }}"
+        dest: "{{ checksum_dest }}"
+        url_username: "{{ nexus_user }}"
+        url_password: "{{ nexus_pass }}"
+        force: yes
+
+    - name: Verify artifact exists after Nexus download
+      ansible.windows.win_stat:
+        path: "{{ download_dest }}"
+      register: artifact_stat
+      failed_when: not artifact_stat.stat.exists
+
+    - name: Verify checksum file exists after Nexus download
+      ansible.windows.win_stat:
+        path: "{{ checksum_dest }}"
+      register: checksum_stat
+      failed_when: not checksum_stat.stat.exists
+
+    - name: Read expected SHA256 checksum
+      ansible.windows.win_shell: |
+        (Get-Content -Path "{{ checksum_dest }}" -Raw).Trim().Split()[0]
+      register: expected_checksum
+      changed_when: false
+
+    - name: Calculate downloaded artifact SHA256
+      ansible.windows.win_shell: |
+        (Get-FileHash -Path "{{ download_dest }}" -Algorithm SHA256).Hash
+      register: actual_checksum
+      changed_when: false
+
+    - name: Verify artifact SHA256 integrity
+      ansible.builtin.assert:
+        that:
+          - actual_checksum.stdout | trim | upper == expected_checksum.stdout | trim | upper
+        fail_msg: >-
+          SHA256 integrity verification failed for {{ artifact_filename }}.
+          Expected={{ expected_checksum.stdout | trim }},
+          Actual={{ actual_checksum.stdout | trim }}
+        success_msg: >-
+          SHA256 integrity verification passed for {{ artifact_filename }}:
+          {{ actual_checksum.stdout | trim }}
 
     - name: Copy artifact to execution directory
       ansible.windows.win_copy:
@@ -37,8 +91,10 @@
 
     - name: Stop existing service instance
       ansible.windows.win_shell: |
-        Get-Process java -ErrorAction SilentlyContinue | Where-Object { $_.CommandLine -like "*reporting-service.jar*" } | Stop-Process -Force -ErrorAction SilentlyContinue
+        Get-Process java -ErrorAction SilentlyContinue |
+          Where-Object { $_.CommandLine -like "*reporting-service.jar*" } |
+          Stop-Process -Force -ErrorAction SilentlyContinue
 
     - name: Start Reporting Service daemon
       ansible.windows.win_shell: |
-        Start-Process java -ArgumentList "-jar", "{{ deploy_dir }}\\reporting-service.jar", "--server.port=8301" -WindowStyle Hidden
+        Start-Process java -ArgumentList "-jar", "{{ deploy_dir }}\\reporting-service.jar", "--server.port={{ target_port }}" -WindowStyle Hidden

@@ -1,38 +1,57 @@
 ---
 - name: Dedicated Rollback Engine for Nexora Platform
   hosts: windows
+
   vars:
-    app_name: "{{ application | default('inventory-api') }}"
-    env_name: "{{ env | default('dev') | lower }}"
+    app_name: "{{ application | default('inventory-api', true) }}"
+    env_name: "{{ env | default('dev', true) | lower }}"
+
+    rollback_version: "{{ rollback_to | default('1.4.1', true) }}"
+    failed_version: "{{ failed_version | default('', true) }}"
+
     target_port: >-
       {{
-        8301 if app_name == 'reporting-service'
-        else (8201 if app_name == 'inventory-web' and env_name == 'dev'
-        else (8202 if app_name == 'inventory-web' and env_name == 'qa'
-        else (8203 if app_name == 'inventory-web' and env_name == 'staging'
-        else (8204 if app_name == 'inventory-web' and env_name == 'prod'
-        else (8101 if env_name == 'dev'
-        else (8102 if env_name == 'qa'
-        else (8103 if env_name == 'staging'
-        else 8104)))))))
+        (
+          8301 if env_name == 'dev'
+          else 8302 if env_name == 'qa'
+          else 8303 if env_name == 'staging'
+          else 8304
+        )
+        if app_name == 'reporting-service'
+        else
+        (
+          8201 if app_name == 'inventory-web' and env_name == 'dev'
+          else 8202 if app_name == 'inventory-web' and env_name == 'qa'
+          else 8203 if app_name == 'inventory-web' and env_name == 'staging'
+          else 8204 if app_name == 'inventory-web' and env_name == 'prod'
+          else
+          (
+            8101 if env_name == 'dev'
+            else 8102 if env_name == 'qa'
+            else 8103 if env_name == 'staging'
+            else 8104
+          )
+        )
       }}
+
     app_pool_name: "{{ app_name }}-{{ env_name }}-pool"
     site_name: "{{ app_name }}-{{ env_name }}"
+
     deploy_path: >-
       {{
-        'C:\\nexora-devops-platform\\deployments\\reporting-service\\' ~ env_name if app_name == 'reporting-service'
-        else ('C:\\inetpub\\nexora\\' ~ env_name ~ '\\web' if app_name == 'inventory-web'
-        else 'C:\\inetpub\\nexora\\' ~ env_name ~ '\\api')
+        'C:\\nexora-devops-platform\\deployments\\reporting-service\\' ~ env_name
+        if app_name == 'reporting-service'
+        else
+        (
+          'C:\\inetpub\\nexora\\' ~ env_name ~ '\\web'
+          if app_name == 'inventory-web'
+          else 'C:\\inetpub\\nexora\\' ~ env_name ~ '\\api'
+        )
       }}
-    rollback_version: "{{ rollback_to | default('1.4.1', true) }}"
+
+    target_version: "{{ rollback_version }}"
+
   tasks:
-    - name: Execute automated rollback role with aligned variables
+    - name: Execute automated rollback role
       include_role:
         name: rollback
-      vars:
-        app_name: "{{ app_name }}"
-        env_name: "{{ env_name }}"
-        app_pool_name: "{{ app_pool_name }}"
-        deploy_path: "{{ deploy_path }}"
-        target_port: "{{ target_port }}"
-        target_version: "{{ rollback_version }}"

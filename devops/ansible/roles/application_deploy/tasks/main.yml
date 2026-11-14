@@ -5,7 +5,7 @@
     state: directory
 
 - name: Stop IIS Application Pool prior to extraction
-  ansible.windows.win_iis_webapppool:
+  community.windows.win_iis_webapppool:
     name: "{{ app_pool_name }}"
     state: stopped
   ignore_errors: yes
@@ -24,7 +24,7 @@
         "Logging": { "LogLevel": { "Default": "Information" } },
         "AllowedHosts": "*",
         "ConnectionStrings": {
-          "InventoryDb": "Host=localhost;Port=5432;Database=inventory_db;Username=nexora_admin;Password={{ lookup('env', 'DB_PASSWORD') | default('', true) }};"
+          "InventoryDb": "Host=localhost;Port=5432;Database=inventory_db;Username=nexora_admin;Password={{ db_password | default(lookup('env', 'DB_PASSWORD'), true) }};"
         },
         "APP_VERSION": "{{ app_version }}",
         "SIMULATE_FAILURE": "{{ simulate_fail | default('false') }}"
@@ -32,24 +32,43 @@
   when: app_name == 'inventory-api'
 
 - name: Start IIS Application Pool
-  ansible.windows.win_iis_webapppool:
+  community.windows.win_iis_webapppool:
     name: "{{ app_pool_name }}"
     state: started
 
 - name: Restart IIS Site
-  ansible.windows.win_iis_website:
+  community.windows.win_iis_website:
     name: "{{ site_name }}"
     state: restarted
   ignore_errors: yes
 
 - name: Record deployment metadata in PostgreSQL audit table
   delegate_to: localhost
+  vars:
+    ansible_connection: local
+    ansible_python_interpreter: /usr/bin/python3
   community.postgresql.postgresql_query:
     db: "inventory_db"
     login_host: "localhost"
     login_user: "nexora_admin"
-    login_password: "{{ lookup('env', 'DB_PASSWORD') | default('', true) }}"
+    login_password: "{{ db_password | default(lookup('env', 'DB_PASSWORD'), true) }}"
     query: >
-      INSERT INTO deployments (application, version, environment, status, commit_sha, pipeline_id, completed_at)
-      VALUES ('{{ app_name }}', '{{ app_version }}', '{{ env_name }}', 'SUCCESS', 'HEAD', 'manual', CURRENT_TIMESTAMP);
+      INSERT INTO deployments (
+        application,
+        version,
+        environment,
+        status,
+        commit_sha,
+        pipeline_id,
+        completed_at
+      )
+      VALUES (
+        '{{ app_name }}',
+        '{{ app_version }}',
+        '{{ env_name }}',
+        'SUCCESS',
+        'HEAD',
+        'manual',
+        CURRENT_TIMESTAMP
+      );
   ignore_errors: no

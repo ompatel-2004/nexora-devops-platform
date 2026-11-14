@@ -2,7 +2,7 @@
 - name: Stop running application service or pool
   block:
     - name: Stop IIS AppPool
-      ansible.windows.win_iis_webapppool:
+      community.windows.win_iis_webapppool:
         name: "{{ app_pool_name }}"
         state: stopped
       when: app_name != 'reporting-service'
@@ -10,22 +10,122 @@
 
     - name: Terminate Spring Boot Java process
       ansible.windows.win_shell: |
-        Get-Process javaw, java -ErrorAction SilentlyContinue | Where-Object { $_.CommandLine -like "*reporting-service.jar*" } | Stop-Process -Force -ErrorAction SilentlyContinue
+        Get-Process javaw, java -ErrorAction SilentlyContinue |
+          Where-Object { $_.CommandLine -like "*reporting-service.jar*" } |
+          Stop-Process -Force -ErrorAction SilentlyContinue
       when: app_name == 'reporting-service'
       ignore_errors: yes
+
+- name: Prepare rollback artifact paths
+  ansible.windows.win_file:
+    path: "C:\\nexora-devops-platform\\artifacts\\{{ app_name }}"
+    state: directory
+
+- name: Define rollback artifact filenames
+  ansible.builtin.set_fact:
+    rollback_artifact_filename: >-
+      {{
+        app_name ~ '-' ~ target_version ~
+        ('.jar' if app_name == 'reporting-service' else '.zip')
+      }}
+    rollback_checksum_filename: "{{ app_name }}-{{ target_version }}.sha256"
+
+- name: Retrieve rollback artifact from Nexus
+  block:
+    - name: Download rollback artifact
+      ansible.windows.win_get_url:
+        url: >-
+          {{ nexus_base | default(
+            lookup('env', 'NEXUS_URL') |
+            default('http://localhost:8081/repository/nexora-releases', true),
+            true
+          ) }}/{{ app_name }}/{{ target_version }}/{{ rollback_artifact_filename }}
+        dest: "C:\\nexora-devops-platform\\artifacts\\{{ app_name }}\\{{ rollback_artifact_filename }}"
+        url_username: "{{ nexus_user | default(lookup('env', 'NEXUS_USER') | default('admin', true), true) }}"
+        url_password: "{{ nexus_pass | default(lookup('env', 'NEXUS_PASSWORD') | default('', true), true) }}"
+        force: yes
+
+    - name: Download rollback SHA256 checksum
+      ansible.windows.win_get_url:
+        url: >-
+          {{ nexus_base | default(
+            lookup('env', 'NEXUS_URL') |
+            default('http://localhost:8081/repository/nexora-releases', true),
+            true
+          ) }}/{{ app_name }}/{{ target_version }}/{{ rollback_checksum_filename }}
+        dest: "C:\\nexora-devops-platform\\artifacts\\{{ app_name }}\\{{ rollback_checksum_filename }}"
+        url_username: "{{ nexus_user | default(lookup('env', 'NEXUS_USER') | default('admin', true), true) }}"
+        url_password: "{{ nexus_pass | default(lookup('env', 'NEXUS_PASSWORD') | default('', true), true) }}"
+        force: yes
+
+    - name: Verify rollback artifact exists
+      ansible.windows.win_stat:
+        path: "C:\\nexora-devops-platform\\artifacts\\{{ app_name }}\\{{ rollback_artifact_filename }}"
+      register: rollback_artifact_stat
+      failed_when: not rollback_artifact_stat.stat.exists
+
+    - name: Verify rollback checksum exists
+      ansible.windows.win_stat:
+        path: "C:\\nexora-devops-platform\\artifacts\\{{ app_name }}\\{{ rollback_checksum_filename }}"
+      register: rollback_checksum_stat
+      failed_when: not rollback_checksum_stat.stat.exists
+
+    - name: Read expected rollback SHA256 checksum
+      ansible.windows.win_shell: |
+        (Get-Content -Path "C:\\nexora-devops-platform\\artifacts\\{{ app_name }}\\{{ rollback_checksum_filename }}" -Raw).Trim().Split()[0]
+      register: rollback_expected_checksum
+      changed_when: false
+      when: not ansible_check_mode
+
+    - name: Calculate downloaded rollback artifact SHA256
+      ansible.windows.win_shell: |
+        (Get-FileHash -Path "C:\\nexora-devops-platform\\artifacts\\{{ app_name }}\\{{ rollback_artifact_filename }}" -Algorithm SHA256).Hash
+      register: rollback_actual_checksum
+      changed_when: false
+      when: not ansible_check_mode
+
+    - name: Verify rollback artifact SHA256 integrity
+      ansible.builtin.assert:
+        that:
+          - rollback_actual_checksum.stdout | trim | upper == rollback_expected_checksum.stdout | trim | upper
+        fail_msg: >-
+          SHA256 integrity verification failed for rollback artifact
+          {{ rollback_artifact_filename }}.
+          Expected={{ rollback_expected_checksum.stdout | trim }},
+          Actual={{ rollback_actual_checksum.stdout | trim }}
+        success_msg: >-
+          SHA256 integrity verification passed for rollback artifact
+          {{ rollback_artifact_filename }}:
+          {{ rollback_actual_checksum.stdout | trim }}
+      when: not ansible_check_mode
 
 - name: Restore previous stable artifact
   block:
     - name: Unzip previous stable web/api release
       community.windows.win_unzip:
-        src: "C:\\nexora-devops-platform\\artifacts\\{{ app_name }}\\{{ app_name }}-{{ target_version }}.zip"
+        src: "C:\\nexora-devops-platform\\artifacts\\{{ app_name }}\\{{ rollback_artifact_filename }}"
         dest: "{{ deploy_path }}"
         delete_archive: no
       when: app_name != 'reporting-service'
 
+    - name: Restore runtime application settings for rolled back API
+      ansible.windows.win_copy:
+        dest: "{{ deploy_path }}\\appsettings.json"
+        content: |
+          {
+            "Logging": { "LogLevel": { "Default": "Information" } },
+            "AllowedHosts": "*",
+            "ConnectionStrings": {
+              "InventoryDb": "Host=localhost;Port=5432;Database=inventory_db;Username=nexora_admin;Password={{ db_password | default(lookup('env', 'DB_PASSWORD'), true) }};"
+            },
+            "APP_VERSION": "{{ target_version }}",
+            "SIMULATE_FAILURE": "false"
+          }
+      when: app_name == 'inventory-api'
+
     - name: Copy previous stable reporting JAR
       ansible.windows.win_copy:
-        src: "C:/nexora-devops-platform/artifacts/reporting-service/reporting-service-{{ target_version }}.jar"
+        src: "C:/nexora-devops-platform/artifacts/reporting-service/{{ rollback_artifact_filename }}"
         dest: "{{ deploy_path }}\\reporting-service.jar"
         remote_src: yes
       when: app_name == 'reporting-service'
@@ -33,13 +133,13 @@
 - name: Restart restored application
   block:
     - name: Start IIS AppPool
-      ansible.windows.win_iis_webapppool:
+      community.windows.win_iis_webapppool:
         name: "{{ app_pool_name }}"
         state: started
       when: app_name != 'reporting-service'
 
     - name: Restart IIS Site
-      ansible.windows.win_iis_website:
+      community.windows.win_iis_website:
         name: "{{ site_name }}"
         state: restarted
       when: app_name != 'reporting-service'
@@ -47,17 +147,36 @@
 
     - name: Start restored Spring Boot service
       ansible.windows.win_shell: |
-        Start-Process java -ArgumentList "-jar", "{{ deploy_path }}\\reporting-service.jar", "--server.port=8301" -WindowStyle Hidden
+        Start-Process java -ArgumentList "-jar", "{{ deploy_path }}\\reporting-service.jar", "--server.port={{ target_port }}" -WindowStyle Hidden
       when: app_name == 'reporting-service'
 
 - name: Record rollback in PostgreSQL audit table
   delegate_to: localhost
+  vars:
+    ansible_connection: local
+    ansible_python_interpreter: /usr/bin/python3
   community.postgresql.postgresql_query:
     db: "inventory_db"
     login_host: "localhost"
     login_user: "nexora_admin"
-    login_password: "{{ lookup('env', 'DB_PASSWORD') | default('', true) }}"
+    login_password: "{{ db_password | default(lookup('env', 'DB_PASSWORD'), true) }}"
     query: >
-      INSERT INTO deployments (application, version, environment, status, rollback_version, rollback_of, completed_at)
-      VALUES ('{{ app_name }}', '{{ target_version }}', '{{ env_name }}', 'ROLLED_BACK', '{{ target_version }}', 'FAILED_RELEASE', CURRENT_TIMESTAMP);
+      INSERT INTO deployments (
+        application,
+        version,
+        environment,
+        status,
+        rollback_version,
+        rollback_of,
+        completed_at
+      )
+      VALUES (
+        '{{ app_name }}',
+        '{{ target_version }}',
+        '{{ env_name }}',
+        'ROLLED_BACK',
+        '{{ target_version }}',
+        '{{ failed_version | default('UNKNOWN', true) }}',
+        CURRENT_TIMESTAMP
+      );
   ignore_errors: no

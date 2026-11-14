@@ -12,11 +12,24 @@ DB_PORT="${DB_PORT:-5432}"
 DB_USER="${DB_USER:-nexora_admin}"
 DB_NAME="${DB_NAME:-inventory_db}"
 
+# PostgreSQL password
+# Can be supplied externally with:
+# export PGPASSWORD='your_password'
+if [[ -z "${PGPASSWORD:-}" ]]; then
+    export PGPASSWORD='devops_secure_password_123'
+fi
+
 echo "=== NEXORA DATABASE MIGRATION ENGINE ==="
 echo "Target: ${DB_NAME} on ${DB_HOST}:${DB_PORT} (User: ${DB_USER})"
 
 # Ensure schema_migrations table exists
-psql -h "${DB_HOST}" -p "${DB_PORT}" -U "${DB_USER}" -d "${DB_NAME}" -c "
+psql \
+    -h "${DB_HOST}" \
+    -p "${DB_PORT}" \
+    -U "${DB_USER}" \
+    -d "${DB_NAME}" \
+    -v ON_ERROR_STOP=1 \
+    -c "
 CREATE TABLE IF NOT EXISTS schema_migrations (
     id SERIAL PRIMARY KEY,
     version VARCHAR(255) UNIQUE NOT NULL,
@@ -27,18 +40,86 @@ CREATE TABLE IF NOT EXISTS schema_migrations (
 for file in $(ls "${MIGRATIONS_DIR}"/*.sql 2>/dev/null | sort); do
     filename=$(basename "${file}")
     version_tag="${filename%.sql}"
-    
-    already_applied=$(psql -h "${DB_HOST}" -p "${DB_PORT}" -U "${DB_USER}" -d "${DB_NAME}" -t -A -c "SELECT COUNT(*) FROM schema_migrations WHERE version = '${version_tag}';")
-    
+
+    already_applied=$(
+        psql \
+            -h "${DB_HOST}" \
+            -p "${DB_PORT}" \
+            -U "${DB_USER}" \
+            -d "${DB_NAME}" \
+            -t -A \
+            -c "SELECT COUNT(*) FROM schema_migrations WHERE version = '${version_tag}';"
+    )
+
     if [[ "${already_applied}" -eq 0 ]]; then
         echo "Applying forward migration: ${filename}..."
-        psql -h "${DB_HOST}" -p "${DB_PORT}" -U "${DB_USER}" -d "${DB_NAME}" -f "${file}"
-        psql -h "${DB_HOST}" -p "${DB_PORT}" -U "${DB_USER}" -d "${DB_NAME}" -c "INSERT INTO schema_migrations (version) VALUES ('${version_tag}');"
+
+        psql \
+            -h "${DB_HOST}" \
+            -p "${DB_PORT}" \
+            -U "${DB_USER}" \
+            -d "${DB_NAME}" \
+            -v ON_ERROR_STOP=1 \
+            -f "${file}"
+
+        psql \
+            -h "${DB_HOST}" \
+            -p "${DB_PORT}" \
+            -U "${DB_USER}" \
+            -d "${DB_NAME}" \
+            -v ON_ERROR_STOP=1 \
+            -c "INSERT INTO schema_migrations (version) VALUES ('${version_tag}');"
+
         echo "Successfully applied ${filename}."
     else
         echo "Skipping already applied migration: ${filename}"
     fi
 done
 
+echo
 echo "Current Applied Database Migrations:"
-psql -h "${DB_HOST}" -p "${DB_PORT}" -U "${DB_USER}" -d "${DB_NAME}" -c "SELECT * FROM schema_migrations ORDER BY id ASC;"
+
+psql \
+    -h "${DB_HOST}" \
+    -p "${DB_PORT}" \
+    -U "${DB_USER}" \
+    -d "${DB_NAME}" \
+    -c "SELECT * FROM schema_migrations ORDER BY id ASC;"
+
+echo
+echo "=== CHECKING DETERMINISTIC PRODUCT SEED ==="
+
+# Load the deterministic seed only when the products table is empty.
+# This prevents normal migration runs from deleting existing inventory data.
+product_count=$(
+    psql \
+        -h "${DB_HOST}" \
+        -p "${DB_PORT}" \
+        -U "${DB_USER}" \
+        -d "${DB_NAME}" \
+        -t -A \
+        -c "SELECT COUNT(*) FROM products;"
+)
+
+if [[ "${product_count}" -eq 0 ]]; then
+    echo "Products table is empty. Loading deterministic product seed..."
+
+    if [[ -f "${SEED_DIR}/001_seed_products.sql" ]]; then
+        psql \
+            -h "${DB_HOST}" \
+            -p "${DB_PORT}" \
+            -U "${DB_USER}" \
+            -d "${DB_NAME}" \
+            -v ON_ERROR_STOP=1 \
+            -f "${SEED_DIR}/001_seed_products.sql"
+
+        echo "Successfully loaded deterministic product seed."
+    else
+        echo "WARNING: Product seed file not found: ${SEED_DIR}/001_seed_products.sql"
+    fi
+else
+    echo "Products table already contains ${product_count} rows. Skipping seed."
+fi
+
+echo
+echo "=== DATABASE MIGRATION COMPLETED ==="
