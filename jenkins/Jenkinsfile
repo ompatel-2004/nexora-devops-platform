@@ -66,57 +66,146 @@ pipeline {
 
                     if (params.APPLICATION == 'inventory-api') {
 
-                        bat """
-                            dotnet tool restore || dotnet tool install --global dotnet-sonarscanner || echo "Sonar tool ready"
+                        bat '''
+                            @echo off
+                            set "DOTNET_TOOLS=%USERPROFILE%\\.dotnet\\tools"
+                            set "PATH=%DOTNET_TOOLS%;%PATH%"
+
+                            echo [SONARQUBE] Checking dotnet-sonarscanner...
+
+                            if not exist "%DOTNET_TOOLS%\\dotnet-sonarscanner.exe" (
+                                echo [SONARQUBE] SonarScanner not found. Installing...
+                                dotnet tool install --global dotnet-sonarscanner
+                                if errorlevel 1 (
+                                    echo [SONARQUBE ERROR] Failed to install dotnet-sonarscanner.
+                                    exit /b 1
+                                )
+                            ) else (
+                                echo [SONARQUBE] SonarScanner already installed.
+                            )
+
+                            if not exist "%DOTNET_TOOLS%\\dotnet-sonarscanner.exe" (
+                                echo [SONARQUBE ERROR] dotnet-sonarscanner executable is still missing.
+                                exit /b 1
+                            )
+
+                            echo [SONARQUBE] Starting analysis...
 
                             dotnet sonarscanner begin ^
                                 /k:"inventory-api" ^
-                                /d:sonar.host.url="${SONAR_HOST}" ^
-                                /d:sonar.login="${SONAR_TOKEN}"
+                                /d:sonar.host.url="%SONAR_HOST%" ^
+                                /d:sonar.login="%SONAR_TOKEN%"
+
+                            if errorlevel 1 (
+                                echo [SONARQUBE ERROR] SonarScanner begin failed.
+                                exit /b 1
+                            )
+
+                            echo [BUILD] Building inventory-api...
 
                             dotnet build "%BASE_DIR%\\applications\\inventory-api\\InventoryApi.csproj" ^
                                 -c Release ^
                                 -f net8.0
+
+                            if errorlevel 1 (
+                                echo [BUILD ERROR] inventory-api build failed.
+                                exit /b 1
+                            )
+
+                            echo [TEST] Running inventory-api tests...
 
                             dotnet test "%BASE_DIR%\\applications\\inventory-api\\InventoryApi.csproj" ^
                                 -c Release ^
                                 -f net8.0 ^
                                 --no-build
 
+                            if errorlevel 1 (
+                                echo [TEST ERROR] inventory-api tests failed.
+                                exit /b 1
+                            )
+
+                            echo [PUBLISH] Cleaning previous publish directory...
+
+                            if exist "%BASE_DIR%\\applications\\inventory-api\\publish" (
+                                rmdir /s /q "%BASE_DIR%\\applications\\inventory-api\\publish"
+                            )
+
+                            mkdir "%BASE_DIR%\\applications\\inventory-api\\publish"
+
+                            echo [PUBLISH] Publishing inventory-api...
+
                             dotnet publish "%BASE_DIR%\\applications\\inventory-api\\InventoryApi.csproj" ^
                                 -c Release ^
                                 -f net8.0 ^
-                                -o "%BASE_DIR%\\applications\\inventory-api\\publish"
+                                -o "%BASE_DIR%\\applications\\inventory-api\\publish" ^
+                                --no-restore
+
+                            if errorlevel 1 (
+                                echo [PUBLISH ERROR] inventory-api publish failed.
+                                exit /b 1
+                            )
+
+                            echo [SONARQUBE] Completing analysis...
 
                             dotnet sonarscanner end ^
-                                /d:sonar.login="${SONAR_TOKEN}"
-                        """
+                                /d:sonar.login="%SONAR_TOKEN%"
+
+                            if errorlevel 1 (
+                                echo [SONARQUBE ERROR] SonarScanner end failed.
+                                exit /b 1
+                            )
+
+                            echo [BUILD & SCAN SUCCESS] inventory-api completed successfully.
+                        '''
 
                     } else if (params.APPLICATION == 'reporting-service') {
 
-                        bat """
+                        bat '''
+                            @echo off
                             cd /d "%BASE_DIR%\\applications\\reporting-service"
 
                             mvn clean test package ^
                                 sonar:sonar ^
-                                -Dsonar.host.url="${SONAR_HOST}" ^
-                                -Dsonar.login="${SONAR_TOKEN}" ^
+                                -Dsonar.host.url="%SONAR_HOST%" ^
+                                -Dsonar.login="%SONAR_TOKEN%" ^
                                 -Dsonar.projectKey=reporting-service
-                        """
+
+                            if errorlevel 1 (
+                                echo [BUILD ERROR] reporting-service build/test/SonarQube failed.
+                                exit /b 1
+                            )
+
+                            echo [BUILD & SCAN SUCCESS] reporting-service completed successfully.
+                        '''
 
                     } else if (params.APPLICATION == 'inventory-web') {
 
-                        bat """
+                        bat '''
+                            @echo off
                             cd /d "%BASE_DIR%\\applications\\inventory-web"
 
                             if exist package-lock.json (
+                                echo [NPM] package-lock.json found. Running npm ci...
                                 npm ci
                             ) else (
+                                echo [NPM] package-lock.json not found. Running npm install...
                                 npm install
                             )
 
+                            if errorlevel 1 (
+                                echo [NPM ERROR] Dependency installation failed.
+                                exit /b 1
+                            )
+
                             npm run build
-                        """
+
+                            if errorlevel 1 (
+                                echo [BUILD ERROR] inventory-web build failed.
+                                exit /b 1
+                            )
+
+                            echo [BUILD & SCAN SUCCESS] inventory-web build completed successfully.
+                        '''
                     }
                 }
             }
@@ -500,9 +589,20 @@ pipeline {
                         )
                     ]) {
 
-                        bat """
-                            wsl.exe bash -c "export ANSIBLE_USER='${env.ANSIBLE_USER}' && export ANSIBLE_PASSWORD='${env.ANSIBLE_PASSWORD}' && export NEXUS_USER='${env.NEXUS_CREDS_USR}' && export NEXUS_PASSWORD='${env.NEXUS_CREDS_PSW}' && export DB_PASSWORD='${env.DB_PASSWORD}' && cd /mnt/c/nexora-devops-platform && ./cli/devopsctl/devopsctl deploy '${params.APPLICATION}' '${params.VERSION}' --env '${params.TARGET_ENV.toLowerCase()}' --simulate-failure '${params.SIMULATE_FAILURE}'"
-                        """
+                        bat '''
+                            @echo off
+
+                            echo [ANSIBLE] Starting WSL deployment...
+
+                            wsl.exe bash -c "export ANSIBLE_USER=\"${ANSIBLE_USER}\" && export ANSIBLE_PASSWORD=\"${ANSIBLE_PASSWORD}\" && export NEXUS_USER=\"${NEXUS_CREDS_USR}\" && export NEXUS_PASSWORD=\"${NEXUS_CREDS_PSW}\" && export DB_PASSWORD=\"${DB_PASSWORD}\" && cd /mnt/c/nexora-devops-platform && ./cli/devopsctl/devopsctl deploy \"${APPLICATION}\" \"${VERSION}\" --env \"${TARGET_ENV}\" --simulate-failure \"${SIMULATE_FAILURE}\""
+
+                            if errorlevel 1 (
+                                echo [ANSIBLE ERROR] Deployment command failed.
+                                exit /b 1
+                            )
+
+                            echo [ANSIBLE SUCCESS] Deployment completed successfully.
+                        '''
                     }
                 }
             }
@@ -576,12 +676,30 @@ pipeline {
 
                                 Write-Host "[HEALTH VERIFIED] Application is healthy."
 
+                                if ($app -eq "inventory-api") {
+                                    if ($response.status -ne "healthy") {
+                                        throw "Inventory API health status is not healthy."
+                                    }
+
+                                    if ($response.database -ne "connected") {
+                                        throw "Inventory API database is not connected."
+                                    }
+
+                                    if ($response.version -ne $env:VERSION) {
+                                        throw "Inventory API version mismatch. Expected $env:VERSION but received $($response.version)."
+                                    }
+
+                                    Write-Host "[HEALTH VERIFIED] API status: $($response.status)"
+                                    Write-Host "[HEALTH VERIFIED] Database: $($response.database)"
+                                    Write-Host "[HEALTH VERIFIED] Version: $($response.version)"
+                                }
+
                             } catch {
 
                                 Write-Warning "[HEALTH FAILED] Deployment failed health verification."
                                 Write-Warning "[HEALTH FAILED] Triggering AUTOMATED ROLLBACK."
 
-                                wsl.exe bash -c "export ANSIBLE_USER='${env:ANSIBLE_USER}' && export ANSIBLE_PASSWORD='${env:ANSIBLE_PASSWORD}' && export NEXUS_USER='${env:NEXUS_CREDS_USR}' && export NEXUS_PASSWORD='${env:NEXUS_CREDS_PSW}' && export DB_PASSWORD='${env:DB_PASSWORD}' && cd /mnt/c/nexora-devops-platform && ./cli/devopsctl/devopsctl rollback '$env:APPLICATION' --env '$envName' --from-version '$env:VERSION'"
+                                wsl.exe bash -c "export ANSIBLE_USER=\"${env:ANSIBLE_USER}\" && export ANSIBLE_PASSWORD=\"${env:ANSIBLE_PASSWORD}\" && export NEXUS_USER=\"${env:NEXUS_CREDS_USR}\" && export NEXUS_PASSWORD=\"${env:NEXUS_CREDS_PSW}\" && export DB_PASSWORD=\"${env:DB_PASSWORD}\" && cd /mnt/c/nexora-devops-platform && ./cli/devopsctl/devopsctl rollback \"$env:APPLICATION\" --env \"$envName\" --from-version \"$env:VERSION\""
 
                                 if ($LASTEXITCODE -ne 0) {
                                     Write-Error "[ROLLBACK FAILED] Automated rollback command failed."
@@ -599,6 +717,10 @@ pipeline {
                                         -TimeoutSec 5
 
                                     Write-Host "[ROLLBACK VERIFIED] Application successfully restored."
+
+                                    if ($app -eq "inventory-api") {
+                                        Write-Host "[ROLLBACK VERIFIED] Restored API version: $($recoveryResponse.version)"
+                                    }
 
                                 } catch {
 
