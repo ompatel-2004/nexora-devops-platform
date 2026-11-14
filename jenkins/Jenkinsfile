@@ -4,39 +4,49 @@ pipeline {
     parameters {
         choice(
             name: 'APPLICATION',
-            choices: ['inventory-api', 'inventory-web', 'reporting-service'],
-            description: 'Application to release'
+            choices: [
+                'inventory-api',
+                'inventory-web',
+                'reporting-service'
+            ],
+            description: 'Application to build and deploy'
         )
 
         string(
             name: 'VERSION',
             defaultValue: '1.4.2',
-            description: 'Semantic Release Version'
+            description: 'Immutable release version'
         )
 
         choice(
             name: 'TARGET_ENV',
-            choices: ['DEV', 'QA', 'STAGING', 'PROD'],
-            description: 'Target Deployment Environment'
+            choices: [
+                'dev',
+                'qa',
+                'staging',
+                'prod'
+            ],
+            description: 'Deployment environment'
         )
 
         booleanParam(
             name: 'AUTO_APPROVE',
             defaultValue: false,
-            description: 'Allow automated deployment without manual approval'
+            description: 'Skip manual production approval'
         )
 
         string(
             name: 'SIMULATE_FAILURE',
             defaultValue: 'false',
-            description: 'Inject fault for failure testing (e.g., 500)'
+            description: 'Set to true to test deployment failure and rollback'
         )
     }
 
     environment {
+        BASE_DIR = "${WORKSPACE}"
+
         NEXUS_URL = 'http://localhost:8081/repository/nexora-releases'
         SONAR_HOST = 'http://localhost:9000'
-        BASE_DIR = 'C:\\nexora-devops-platform'
 
         NEXUS_CREDS = credentials('nexus')
         SONAR_TOKEN = credentials('sonar-token')
@@ -44,721 +54,548 @@ pipeline {
 
     stages {
 
-        stage('Checkout & Validation') {
+        stage('Checkout') {
             steps {
-                echo "[CI/CD] Checking out ${params.APPLICATION} version ${params.VERSION}"
+                checkout scm
 
-                bat '''
-                    git status
+                sh '''
+                    set -e
+
+                    echo "========================================"
+                    echo "Checkout"
+                    echo "========================================"
+
                     git rev-parse --short HEAD
+                    git status --short
                 '''
-
-                echo "[VALIDATION] Application : ${params.APPLICATION}"
-                echo "[VALIDATION] Version     : ${params.VERSION}"
-                echo "[VALIDATION] Environment : ${params.TARGET_ENV}"
             }
         }
 
-        stage('Build, Test & SonarQube Scan') {
+        stage('Validate Release') {
+            steps {
+                sh '''
+                    set -e
+
+                    echo "========================================"
+                    echo "Release Validation"
+                    echo "========================================"
+
+                    test -n "${APPLICATION}"
+                    test -n "${VERSION}"
+                    test -n "${TARGET_ENV}"
+
+                    case "${APPLICATION}" in
+                        inventory-api|inventory-web|reporting-service)
+                            ;;
+                        *)
+                            echo "ERROR: Unsupported application"
+                            exit 1
+                            ;;
+                    esac
+
+                    case "${TARGET_ENV}" in
+                        dev|qa|staging|prod)
+                            ;;
+                        *)
+                            echo "ERROR: Unsupported environment"
+                            exit 1
+                            ;;
+                    esac
+
+                    echo "Application : ${APPLICATION}"
+                    echo "Version     : ${VERSION}"
+                    echo "Environment : ${TARGET_ENV}"
+                '''
+            }
+        }
+
+        stage('Build / Test / Sonar') {
+            steps {
+                withCredentials([
+                    string(
+                        credentialsId: 'sonar-token',
+                        variable: 'SONAR_TOKEN'
+                    )
+                ]) {
+                    sh '''
+                        set -e
+
+                        echo "========================================"
+                        echo "Build / Test / Sonar"
+                        echo "========================================"
+
+                        export PATH="$PATH:$HOME/.dotnet/tools"
+
+                        SONAR_SCANNER_VERSION="5.15.0"
+
+                        echo "Installing SonarScanner for .NET ${SONAR_SCANNER_VERSION}"
+
+                        dotnet tool install \
+                            --global \
+                            dotnet-sonarscanner \
+                            --version "${SONAR_SCANNER_VERSION}" \
+                            --ignore-failed-sources \
+                            || true
+
+                        command -v dotnet-sonarscanner
+
+                        echo "Starting SonarQube analysis"
+
+                        dotnet-sonarscanner begin \
+                            /k:"nexora-${APPLICATION}" \
+                            /n:"Nexora ${APPLICATION}" \
+                            /d:sonar.host.url="${SONAR_HOST}" \
+                            /d:sonar.token="${SONAR_TOKEN}" \
+                            /d:sonar.qualitygate.wait=false \
+                            /d:sonar.scanner.skipJreProvisioning=true \
+                            /d:sonar.http.timeout=300
+
+                        case "${APPLICATION}" in
+
+                            inventory-api)
+
+                                cd applications/inventory-api
+
+                                rm -rf publish
+
+                                dotnet restore
+
+                                dotnet build \
+                                    --configuration Release \
+                                    --no-restore
+
+                                dotnet test \
+                                    --configuration Release \
+                                    --no-build
+
+                                dotnet publish \
+                                    --configuration Release \
+                                    --no-build \
+                                    --output ./publish
+                                ;;
+
+                            inventory-web)
+
+                                cd applications/inventory-web
+
+                                npm ci
+
+                                npm run build
+                                ;;
+
+                            reporting-service)
+
+                                cd applications/reporting-service
+
+                                mvn clean test package
+                                ;;
+
+                        esac
+
+                        echo "Completing SonarQube analysis"
+
+                        dotnet-sonarscanner end \
+                            /d:sonar.token="${SONAR_TOKEN}"
+                    '''
+                }
+            }
+        }
+
+        stage('Sonar Quality Gate') {
             steps {
                 script {
-                    echo "[BUILD & SCAN] Compiling, testing, and scanning ${params.APPLICATION}"
 
-                    if (params.APPLICATION == 'inventory-api') {
+                    def maxAttempts = 12
+                    def attempt = 0
+                    def gatePassed = false
 
-                        bat '''
-                            @echo off
+                    echo "Waiting for SonarQube quality gate..."
 
-                            set "DOTNET_TOOLS=%USERPROFILE%\\.dotnet\\tools"
-                            set "PATH=%DOTNET_TOOLS%;%PATH%"
+                    while (attempt < maxAttempts && !gatePassed) {
 
-                            echo [SONARQUBE] Preparing compatible SonarScanner for SonarQube 9.9...
-                            echo [SONARQUBE] Required compatible version: 5.15.0
+                        attempt++
 
-                            dotnet tool uninstall --global dotnet-sonarscanner >nul 2>&1
+                        sh """
+                            echo "SonarQube quality gate check attempt ${attempt}/${maxAttempts}"
+                        """
 
-                            dotnet tool install --global dotnet-sonarscanner --version 5.15.0
+                        def result = sh(
+                            script: '''
+                                set +e
 
-                            if errorlevel 1 (
-                                echo [SONARQUBE ERROR] Failed to install dotnet-sonarscanner 5.15.0.
-                                exit /b 1
-                            )
+                                RESPONSE=$(curl -s \
+                                    -u "${SONAR_TOKEN}:" \
+                                    "${SONAR_HOST}/api/qualitygates/project_status?projectKey=nexora-${APPLICATION}")
 
-                            if not exist "%DOTNET_TOOLS%\\dotnet-sonarscanner.exe" (
-                                echo [SONARQUBE ERROR] dotnet-sonarscanner executable was not found.
-                                exit /b 1
-                            )
+                                echo "${RESPONSE}" > sonar-quality-gate.json
 
-                            echo [SONARQUBE] Scanner version:
-                            dotnet sonarscanner --version
+                                STATUS=$(echo "${RESPONSE}" | \
+                                    sed -n 's/.*"projectStatus":{"status":"\\([^"]*\\)".*/\\1/p')
 
-                            echo [SONARQUBE] Starting analysis...
+                                echo "Quality Gate Status: ${STATUS}"
 
-                            dotnet sonarscanner begin ^
-                                /k:"inventory-api" ^
-                                /d:sonar.host.url="%SONAR_HOST%" ^
-                                /d:sonar.login="%SONAR_TOKEN%"
+                                if [ "${STATUS}" = "OK" ]; then
+                                    exit 0
+                                fi
 
-                            if errorlevel 1 (
-                                echo [SONARQUBE ERROR] SonarScanner begin failed.
-                                exit /b 1
-                            )
+                                if [ "${STATUS}" = "ERROR" ]; then
+                                    exit 2
+                                fi
 
-                            echo [BUILD] Cleaning previous build output...
+                                exit 1
+                            ''',
+                            returnStatus: true
+                        )
 
-                            dotnet clean "%BASE_DIR%\\applications\\inventory-api\\InventoryApi.csproj" ^
-                                -c Release ^
-                                -f net8.0
+                        if (result == 0) {
+                            gatePassed = true
+                        } else if (result == 2) {
+                            error("SonarQube Quality Gate FAILED")
+                        } else {
+                            sleep(time: 5, unit: 'SECONDS')
+                        }
+                    }
 
-                            if errorlevel 1 (
-                                echo [BUILD ERROR] dotnet clean failed.
-                                exit /b 1
-                            )
-
-                            echo [BUILD] Building inventory-api...
-
-                            dotnet build "%BASE_DIR%\\applications\\inventory-api\\InventoryApi.csproj" ^
-                                -c Release ^
-                                -f net8.0
-
-                            if errorlevel 1 (
-                                echo [BUILD ERROR] inventory-api build failed.
-                                exit /b 1
-                            )
-
-                            echo [TEST] Running inventory-api tests...
-
-                            dotnet test "%BASE_DIR%\\applications\\inventory-api\\InventoryApi.csproj" ^
-                                -c Release ^
-                                -f net8.0 ^
-                                --no-build
-
-                            if errorlevel 1 (
-                                echo [TEST ERROR] inventory-api tests failed.
-                                exit /b 1
-                            )
-
-                            echo [PUBLISH] Cleaning previous publish directory...
-
-                            if exist "%BASE_DIR%\\applications\\inventory-api\\publish" (
-                                rmdir /s /q "%BASE_DIR%\\applications\\inventory-api\\publish"
-                            )
-
-                            mkdir "%BASE_DIR%\\applications\\inventory-api\\publish"
-
-                            echo [PUBLISH] Publishing inventory-api...
-
-                            dotnet publish "%BASE_DIR%\\applications\\inventory-api\\InventoryApi.csproj" ^
-                                -c Release ^
-                                -f net8.0 ^
-                                -o "%BASE_DIR%\\applications\\inventory-api\\publish" ^
-                                --no-restore
-
-                            if errorlevel 1 (
-                                echo [PUBLISH ERROR] inventory-api publish failed.
-                                exit /b 1
-                            )
-
-                            echo [SONARQUBE] Completing analysis...
-
-                            dotnet sonarscanner end ^
-                                /d:sonar.login="%SONAR_TOKEN%"
-
-                            if errorlevel 1 (
-                                echo [SONARQUBE ERROR] SonarScanner end failed.
-                                exit /b 1
-                            )
-
-                            echo [BUILD & SCAN SUCCESS] inventory-api completed successfully.
-                        '''
-
-                    } else if (params.APPLICATION == 'reporting-service') {
-
-                        bat '''
-                            @echo off
-
-                            cd /d "%BASE_DIR%\\applications\\reporting-service"
-
-                            echo [BUILD] Running Maven clean test package...
-
-                            mvn clean test package
-
-                            if errorlevel 1 (
-                                echo [BUILD ERROR] reporting-service Maven build/test/package failed.
-                                exit /b 1
-                            )
-
-                            echo [SONARQUBE] Running Maven SonarQube analysis...
-
-                            mvn sonar:sonar ^
-                                -Dsonar.host.url="%SONAR_HOST%" ^
-                                -Dsonar.login="%SONAR_TOKEN%" ^
-                                -Dsonar.projectKey=reporting-service
-
-                            if errorlevel 1 (
-                                echo [SONARQUBE ERROR] reporting-service SonarQube analysis failed.
-                                exit /b 1
-                            )
-
-                            echo [BUILD & SCAN SUCCESS] reporting-service completed successfully.
-                        '''
-
-                    } else if (params.APPLICATION == 'inventory-web') {
-
-                        bat '''
-                            @echo off
-
-                            cd /d "%BASE_DIR%\\applications\\inventory-web"
-
-                            if exist package-lock.json (
-                                echo [NPM] package-lock.json found. Running npm ci...
-                                npm ci
-                            ) else (
-                                echo [NPM] package-lock.json not found. Running npm install...
-                                npm install
-                            )
-
-                            if errorlevel 1 (
-                                echo [NPM ERROR] Dependency installation failed.
-                                exit /b 1
-                            )
-
-                            echo [BUILD] Building inventory-web...
-
-                            npm run build
-
-                            if errorlevel 1 (
-                                echo [BUILD ERROR] inventory-web build failed.
-                                exit /b 1
-                            )
-
-                            echo [BUILD & SCAN SUCCESS] inventory-web build completed successfully.
-                        '''
+                    if (!gatePassed) {
+                        error("SonarQube Quality Gate did not return OK within timeout")
                     }
                 }
             }
         }
 
-        stage('SonarQube Quality Gate Verification') {
+        stage('Generate SBOM') {
             steps {
-                powershell '''
-                    $app = $env:APPLICATION
-                    $token = $env:SONAR_TOKEN
+                sh '''
+                    set -e
 
-                    Write-Host "[SONARQUBE] Polling Quality Gate status on $env:SONAR_HOST for $app..."
+                    echo "========================================"
+                    echo "Generating SBOM"
+                    echo "========================================"
 
-                    $auth = [Convert]::ToBase64String(
-                        [Text.Encoding]::ASCII.GetBytes("${token}:")
+                    mkdir -p build/sbom
+
+                    case "${APPLICATION}" in
+
+                        inventory-api)
+                            cd applications/inventory-api
+
+                            dotnet list package \
+                                --format json \
+                                > "${WORKSPACE}/build/sbom/${APPLICATION}-${VERSION}-dotnet-packages.json"
+                            ;;
+
+                        inventory-web)
+                            cd applications/inventory-web
+
+                            npm list \
+                                --all \
+                                --json \
+                                > "${WORKSPACE}/build/sbom/${APPLICATION}-${VERSION}-npm-packages.json"
+                            ;;
+
+                        reporting-service)
+                            cd applications/reporting-service
+
+                            mvn dependency:tree \
+                                -DoutputFile="${WORKSPACE}/build/sbom/${APPLICATION}-${VERSION}-maven-dependencies.txt"
+                            ;;
+
+                    esac
+                '''
+            }
+        }
+
+        stage('Package') {
+            steps {
+                sh '''
+                    set -e
+
+                    echo "========================================"
+                    echo "Package Release"
+                    echo "========================================"
+
+                    mkdir -p build/release
+
+                    case "${APPLICATION}" in
+
+                        inventory-api)
+
+                            cd applications/inventory-api
+
+                            rm -f "${WORKSPACE}/build/release/${APPLICATION}-${VERSION}.zip"
+
+                            (
+                                cd publish
+                                zip -qr \
+                                    "${WORKSPACE}/build/release/${APPLICATION}-${VERSION}.zip" \
+                                    .
+                            )
+                            ;;
+
+                        inventory-web)
+
+                            cd applications/inventory-web
+
+                            rm -f "${WORKSPACE}/build/release/${APPLICATION}-${VERSION}.zip"
+
+                            (
+                                cd dist
+                                zip -qr \
+                                    "${WORKSPACE}/build/release/${APPLICATION}-${VERSION}.zip" \
+                                    .
+                            )
+                            ;;
+
+                        reporting-service)
+
+                            cp \
+                                applications/reporting-service/target/*.jar \
+                                "build/release/${APPLICATION}-${VERSION}.jar"
+                            ;;
+
+                    esac
+
+                    cd build/release
+
+                    sha256sum \
+                        "${APPLICATION}-${VERSION}"* \
+                        > "${APPLICATION}-${VERSION}.sha256"
+
+                    echo
+                    echo "Release artifacts:"
+                    ls -lh
+                '''
+            }
+        }
+
+        stage('Publish to Nexus') {
+            steps {
+                withCredentials([
+                    usernamePassword(
+                        credentialsId: 'nexus',
+                        usernameVariable: 'NEXUS_USER',
+                        passwordVariable: 'NEXUS_PASSWORD'
                     )
+                ]) {
+                    sh '''
+                        set -e
 
-                    $headers = @{
-                        Authorization = "Basic $auth"
-                    }
+                        echo "========================================"
+                        echo "Publishing Immutable Artifact to Nexus"
+                        echo "========================================"
 
-                    $maxAttempts = 12
-                    $attempt = 0
-                    $status = ""
+                        ARTIFACT_NAME="${APPLICATION}-${VERSION}"
 
-                    while ($attempt -lt $maxAttempts) {
-                        $attempt++
+                        if [ "${APPLICATION}" = "reporting-service" ]; then
+                            EXTENSION="jar"
+                        else
+                            EXTENSION="zip"
+                        fi
 
-                        try {
-                            $qgUrl = "$env:SONAR_HOST/api/qualitygates/project_status?projectKey=$app"
+                        ARTIFACT_FILE="build/release/${ARTIFACT_NAME}.${EXTENSION}"
+                        CHECKSUM_FILE="build/release/${ARTIFACT_NAME}.sha256"
 
-                            $response = Invoke-RestMethod `
-                                -Uri $qgUrl `
-                                -Method Get `
-                                -Headers $headers `
-                                -TimeoutSec 15
+                        TARGET_URL="${NEXUS_URL}/${APPLICATION}/${VERSION}/"
 
-                            $status = $response.projectStatus.status
+                        echo "Target: ${TARGET_URL}"
 
-                            Write-Host "[SONARQUBE] Attempt $attempt/$maxAttempts - Status: $status"
+                        curl --fail --silent --show-error \
+                            -u "${NEXUS_USER}:${NEXUS_PASSWORD}" \
+                            -T "${ARTIFACT_FILE}" \
+                            "${TARGET_URL}${ARTIFACT_NAME}.${EXTENSION}"
 
-                            if ($status -eq "OK") {
-                                Write-Host "[QUALITY GATE PASSED] Quality Gate status verified: OK."
-                                break
-                            }
+                        curl --fail --silent --show-error \
+                            -u "${NEXUS_USER}:${NEXUS_PASSWORD}" \
+                            -T "${CHECKSUM_FILE}" \
+                            "${TARGET_URL}${ARTIFACT_NAME}.sha256"
 
-                            if ($status -eq "ERROR") {
-                                Write-Error "[QUALITY GATE FAILED] Strict Quality Gate failed."
-                                exit 1
-                            }
+                        echo
+                        echo "Verifying immutable artifact"
 
-                            Write-Host "[SONARQUBE] Evaluation still pending. Waiting 5 seconds..."
-                            Start-Sleep -Seconds 5
+                        HTTP_CODE=$(curl \
+                            -s \
+                            -o /dev/null \
+                            -w "%{http_code}" \
+                            -u "${NEXUS_USER}:${NEXUS_PASSWORD}" \
+                            "${TARGET_URL}${ARTIFACT_NAME}.${EXTENSION}")
 
-                        } catch {
-                            if ($attempt -eq $maxAttempts) {
-                                Write-Error "[QUALITY GATE ERROR] Unable to obtain final SonarQube status: $_"
-                                exit 1
-                            }
+                        if [ "${HTTP_CODE}" != "200" ]; then
+                            echo "ERROR: Nexus artifact verification failed"
+                            exit 1
+                        fi
 
-                            Write-Host "[SONARQUBE] Temporary query failure. Retrying..."
-                            Start-Sleep -Seconds 5
-                        }
-                    }
-
-                    if ($status -ne "OK") {
-                        Write-Error "[QUALITY GATE FAILED] Final SonarQube status: $status"
-                        exit 1
-                    }
-                '''
+                        echo "Nexus artifact verification: SUCCESS"
+                    '''
+                }
             }
         }
 
-        stage('Security & SBOM Generation') {
-            steps {
-                powershell '''
-                    $app = $env:APPLICATION
-                    $ver = $env:VERSION
-
-                    $targetDir = "$env:BASE_DIR\\artifacts\\$app"
-
-                    if (-not (Test-Path $targetDir)) {
-                        New-Item -ItemType Directory -Path $targetDir -Force | Out-Null
-                    }
-
-                    $deps = @()
-
-                    if ($app -eq "inventory-api") {
-
-                        $projFile = "$env:BASE_DIR\\applications\\inventory-api\\InventoryApi.csproj"
-
-                        [xml]$xml = Get-Content $projFile
-
-                        foreach ($pkg in $xml.Project.ItemGroup.PackageReference) {
-                            $deps += @{
-                                name = $pkg.Include
-                                version = $pkg.Version
-                                purl = "pkg:nuget/$($pkg.Include)@$($pkg.Version)"
-                            }
-                        }
-
-                    } elseif ($app -eq "reporting-service") {
-
-                        $pomFile = "$env:BASE_DIR\\applications\\reporting-service\\pom.xml"
-
-                        [xml]$xml = Get-Content $pomFile
-
-                        foreach ($dep in $xml.project.dependencies.dependency) {
-                            $v = $dep.version
-
-                            if (-not $v) {
-                                $v = "unknown"
-                            }
-
-                            $deps += @{
-                                name = $dep.artifactId
-                                version = $v
-                                purl = "pkg:maven/$($dep.groupId)/$($dep.artifactId)@$v"
-                            }
-                        }
-
-                    } elseif ($app -eq "inventory-web") {
-
-                        $pkgFile = "$env:BASE_DIR\\applications\\inventory-web\\package.json"
-
-                        if (Test-Path $pkgFile) {
-                            $pkg = Get-Content $pkgFile | ConvertFrom-Json
-
-                            if ($pkg.dependencies) {
-                                foreach ($prop in $pkg.dependencies.PSObject.Properties) {
-                                    $deps += @{
-                                        name = $prop.Name
-                                        version = $prop.Value
-                                        purl = "pkg:npm/$($prop.Name)@$($prop.Value)"
-                                    }
-                                }
-                            }
-                        }
-                    }
-
-                    $sbom = @{
-                        bomFormat = "CycloneDX"
-                        specVersion = "1.5"
-                        serialNumber = "urn:uuid:$([guid]::NewGuid())"
-                        version = 1
-                        metadata = @{
-                            timestamp = (Get-Date -Format "yyyy-MM-ddTHH:mm:ssZ")
-                            component = @{
-                                name = $app
-                                version = $ver
-                                type = "application"
-                            }
-                        }
-                        components = $deps
-                    } | ConvertTo-Json -Depth 10
-
-                    $sbomPath = "$targetDir\\$app-$ver.sbom.json"
-
-                    Set-Content `
-                        -Path $sbomPath `
-                        -Value $sbom
-
-                    Write-Host "[SECURITY] CycloneDX SBOM generated:"
-                    Write-Host "$sbomPath"
-                '''
-            }
-        }
-
-        stage('Package & Nexus Publish') {
-            steps {
-                powershell '''
-                    $app = $env:APPLICATION
-                    $ver = $env:VERSION
-
-                    $sourceDir = "$env:BASE_DIR\\applications\\$app"
-                    $artifactDir = "$env:BASE_DIR\\artifacts\\$app"
-
-                    if (-not (Test-Path $artifactDir)) {
-                        New-Item -ItemType Directory -Path $artifactDir -Force | Out-Null
-                    }
-
-                    if ($app -eq "reporting-service") {
-
-                        $packageFile = "$artifactDir\\$app-$ver.jar"
-                        $expectedJar = "$sourceDir\\target\\reporting-service-$ver.jar"
-
-                        if (-not (Test-Path $expectedJar)) {
-                            Write-Error "[BUILD INTEGRITY ERROR] Expected artifact does not exist:"
-                            Write-Error "$expectedJar"
-                            exit 1
-                        }
-
-                        Copy-Item $expectedJar $packageFile -Force
-
-                    } elseif ($app -eq "inventory-api") {
-
-                        $packageFile = "$artifactDir\\$app-$ver.zip"
-
-                        if (-not (Test-Path "$sourceDir\\publish")) {
-                            Write-Error "[PACKAGE ERROR] Publish directory does not exist."
-                            exit 1
-                        }
-
-                        Compress-Archive `
-                            -Path "$sourceDir\\publish\\*" `
-                            -DestinationPath $packageFile `
-                            -Force
-
-                    } elseif ($app -eq "inventory-web") {
-
-                        $packageFile = "$artifactDir\\$app-$ver.zip"
-
-                        if (-not (Test-Path "$sourceDir\\dist")) {
-                            Write-Error "[PACKAGE ERROR] Angular dist directory does not exist."
-                            exit 1
-                        }
-
-                        Compress-Archive `
-                            -Path "$sourceDir\\dist\\*" `
-                            -DestinationPath $packageFile `
-                            -Force
-                    }
-
-                    if (-not (Test-Path $packageFile)) {
-                        Write-Error "[PACKAGE ERROR] Artifact was not created: $packageFile"
-                        exit 1
-                    }
-
-                    $localHash = (
-                        Get-FileHash `
-                            -Path $packageFile `
-                            -Algorithm SHA256
-                    ).Hash
-
-                    $checksumFile = "$artifactDir\\$app-$ver.sha256"
-
-                    Set-Content `
-                        -Path $checksumFile `
-                        -Value $localHash
-
-                    Write-Host "[PACKAGE] Artifact:"
-                    Write-Host "$packageFile"
-
-                    Write-Host "[PACKAGE] SHA256:"
-                    Write-Host "$localHash"
-
-                    $fileName = [System.IO.Path]::GetFileName($packageFile)
-                    $checksumFileName = [System.IO.Path]::GetFileName($checksumFile)
-
-                    $nexusUri = "$env:NEXUS_URL/$app/$ver/$fileName"
-                    $checksumNexusUri = "$env:NEXUS_URL/$app/$ver/$checksumFileName"
-
-                    $auth = [Convert]::ToBase64String(
-                        [Text.Encoding]::ASCII.GetBytes(
-                            "$($env:NEXUS_CREDS_USR):$($env:NEXUS_CREDS_PSW)"
-                        )
-                    )
-
-                    $headers = @{
-                        Authorization = "Basic $auth"
-                    }
-
-                    Write-Host "[NEXUS] Publishing artifact..."
-
-                    try {
-
-                        Invoke-RestMethod `
-                            -Uri $nexusUri `
-                            -Method Put `
-                            -InFile $packageFile `
-                            -Headers $headers
-
-                        Write-Host "[NEXUS UPLOAD SUCCESS] Artifact uploaded successfully."
-
-                    } catch {
-
-                        $statusCode = $_.Exception.Response.StatusCode.value__
-
-                        if ($statusCode -eq 400 -or $statusCode -eq 409) {
-
-                            Write-Host "[NEXUS CHECK] Artifact already exists. Verifying immutable checksum..."
-
-                            $tempDownload = "$artifactDir\\temp-nexus-check-$fileName"
-
-                            try {
-
-                                Invoke-RestMethod `
-                                    -Uri $nexusUri `
-                                    -Method Get `
-                                    -Headers $headers `
-                                    -OutFile $tempDownload
-
-                                $remoteHash = (
-                                    Get-FileHash `
-                                        -Path $tempDownload `
-                                        -Algorithm SHA256
-                                ).Hash
-
-                                Remove-Item `
-                                    $tempDownload `
-                                    -Force `
-                                    -ErrorAction SilentlyContinue
-
-                                if ($remoteHash -eq $localHash) {
-
-                                    Write-Host "[NEXUS INTEGRITY VERIFIED] Existing artifact matches SHA256."
-
-                                } else {
-
-                                    Write-Error "[NEXUS CHECKSUM MISMATCH]"
-                                    Write-Error "Local  : $localHash"
-                                    Write-Error "Remote : $remoteHash"
-                                    Write-Error "Release rejected because immutable artifact differs."
-                                    exit 1
-                                }
-
-                            } catch {
-
-                                Write-Error "[NEXUS VERIFY ERROR] Unable to verify existing artifact: $_"
-                                exit 1
-                            }
-
-                        } else {
-
-                            Write-Error "[NEXUS UPLOAD FAILED] $_"
-                            exit 1
-                        }
-                    }
-
-                    Write-Host "[NEXUS] Publishing SHA256 checksum..."
-
-                    try {
-
-                        Invoke-RestMethod `
-                            -Uri $checksumNexusUri `
-                            -Method Put `
-                            -InFile $checksumFile `
-                            -Headers $headers
-
-                        Write-Host "[NEXUS CHECKSUM UPLOAD SUCCESS]"
-
-                    } catch {
-
-                        Write-Error "[NEXUS CHECKSUM UPLOAD FAILED] $_"
-                        exit 1
-                    }
-                '''
-            }
-        }
-
-        stage('Manual Approval Gate') {
+        stage('Approval') {
             when {
                 expression {
-                    return params.AUTO_APPROVE != true &&
-                           params.TARGET_ENV != 'DEV'
+                    return params.TARGET_ENV == 'prod' &&
+                           !params.AUTO_APPROVE
                 }
             }
 
             steps {
-                input message: "Approve deployment of ${params.APPLICATION} v${params.VERSION} to ${params.TARGET_ENV}?"
-            }
-        }
-
-        stage('Ansible Orchestrated Deployment') {
-            steps {
-                script {
-
-                    echo "[ANSIBLE] Executing deployment for ${params.APPLICATION}"
-
-                    withCredentials([
-                        usernamePassword(
-                            credentialsId: 'ansible-windows',
-                            usernameVariable: 'ANSIBLE_USER',
-                            passwordVariable: 'ANSIBLE_PASSWORD'
-                        ),
-                        string(
-                            credentialsId: 'postgres-db',
-                            variable: 'DB_PASSWORD'
-                        )
-                    ]) {
-
-                        bat '''
-                            @echo off
-
-                            echo [ANSIBLE] Starting WSL deployment...
-
-                            wsl.exe bash -c "export ANSIBLE_USER=\"%ANSIBLE_USER%\" && export ANSIBLE_PASSWORD=\"%ANSIBLE_PASSWORD%\" && export NEXUS_USER=\"%NEXUS_CREDS_USR%\" && export NEXUS_PASSWORD=\"%NEXUS_CREDS_PSW%\" && export DB_PASSWORD=\"%DB_PASSWORD%\" && cd /mnt/c/nexora-devops-platform && ./cli/devopsctl/devopsctl deploy \"%APPLICATION%\" \"%VERSION%\" --env \"%TARGET_ENV%\" --simulate-failure \"%SIMULATE_FAILURE%\""
-
-                            if errorlevel 1 (
-                                echo [ANSIBLE ERROR] Deployment command failed.
-                                exit /b 1
-                            )
-
-                            echo [ANSIBLE SUCCESS] Deployment completed successfully.
-                        '''
-                    }
+                timeout(time: 30, unit: 'MINUTES') {
+                    input message: "Deploy ${APPLICATION} ${VERSION} to PROD?"
                 }
             }
         }
 
-        stage('Health Verification & Automated Recovery') {
+        stage('Deploy') {
             steps {
-                script {
+                withCredentials([
+                    usernamePassword(
+                        credentialsId: 'ansible-windows',
+                        usernameVariable: 'ANSIBLE_USER',
+                        passwordVariable: 'ANSIBLE_PASSWORD'
+                    ),
+                    usernamePassword(
+                        credentialsId: 'nexus',
+                        usernameVariable: 'NEXUS_USER',
+                        passwordVariable: 'NEXUS_PASSWORD'
+                    ),
+                    string(
+                        credentialsId: 'postgres-db',
+                        variable: 'DB_PASSWORD'
+                    )
+                ]) {
+                    sh '''
+                        set -e
 
-                    withCredentials([
-                        usernamePassword(
-                            credentialsId: 'ansible-windows',
-                            usernameVariable: 'ANSIBLE_USER',
-                            passwordVariable: 'ANSIBLE_PASSWORD'
-                        ),
-                        string(
-                            credentialsId: 'postgres-db',
-                            variable: 'DB_PASSWORD'
-                        )
-                    ]) {
+                        echo "========================================"
+                        echo "Deploy"
+                        echo "========================================"
 
-                        powershell '''
-                            $app = $env:APPLICATION
-                            $envName = $env:TARGET_ENV.ToLower()
+                        cd "${WORKSPACE}"
 
-                            if ($app -eq "reporting-service") {
+                        export ANSIBLE_USER
+                        export ANSIBLE_PASSWORD
+                        export NEXUS_USER
+                        export NEXUS_PASSWORD
+                        export DB_PASSWORD
 
-                                $port = switch ($envName) {
-                                    "dev"     { 8301 }
-                                    "qa"      { 8302 }
-                                    "staging" { 8303 }
-                                    "prod"    { 8304 }
-                                    default   { 8301 }
-                                }
+                        chmod +x ./cli/devopsctl/devopsctl
 
-                                $url = "http://localhost:$port/health"
+                        ./cli/devopsctl/devopsctl deploy \
+                            "${APPLICATION}" \
+                            "${VERSION}" \
+                            --env "${TARGET_ENV}" \
+                            --simulate-failure "${SIMULATE_FAILURE}"
+                    '''
+                }
+            }
+        }
 
-                            } elseif ($app -eq "inventory-web") {
+        stage('Health Check / Rollback') {
+            steps {
+                withCredentials([
+                    usernamePassword(
+                        credentialsId: 'ansible-windows',
+                        usernameVariable: 'ANSIBLE_USER',
+                        passwordVariable: 'ANSIBLE_PASSWORD'
+                    ),
+                    usernamePassword(
+                        credentialsId: 'nexus',
+                        usernameVariable: 'NEXUS_USER',
+                        passwordVariable: 'NEXUS_PASSWORD'
+                    ),
+                    string(
+                        credentialsId: 'postgres-db',
+                        variable: 'DB_PASSWORD'
+                    )
+                ]) {
+                    script {
 
-                                $port = switch ($envName) {
-                                    "dev"     { 8201 }
-                                    "qa"      { 8202 }
-                                    "staging" { 8203 }
-                                    "prod"    { 8204 }
-                                    default   { 8201 }
-                                }
+                        def healthResult = sh(
+                            script: '''
+                                set +e
 
-                                $url = "http://localhost:$port/"
+                                echo "========================================"
+                                echo "Post-Deployment Health Check"
+                                echo "========================================"
 
-                            } else {
+                                case "${APPLICATION}" in
+                                    inventory-api)
+                                        PORT=8101
+                                        ;;
+                                    inventory-web)
+                                        PORT=8201
+                                        ;;
+                                    reporting-service)
+                                        PORT=8301
+                                        ;;
+                                esac
 
-                                $port = switch ($envName) {
-                                    "dev"     { 8101 }
-                                    "qa"      { 8102 }
-                                    "staging" { 8103 }
-                                    "prod"    { 8104 }
-                                    default   { 8101 }
-                                }
+                                if [ "${TARGET_ENV}" = "qa" ]; then
+                                    case "${APPLICATION}" in
+                                        inventory-api) PORT=8102 ;;
+                                        inventory-web) PORT=8202 ;;
+                                        reporting-service) PORT=8302 ;;
+                                    esac
+                                elif [ "${TARGET_ENV}" = "staging" ]; then
+                                    case "${APPLICATION}" in
+                                        inventory-api) PORT=8103 ;;
+                                        inventory-web) PORT=8203 ;;
+                                        reporting-service) PORT=8303 ;;
+                                    esac
+                                elif [ "${TARGET_ENV}" = "prod" ]; then
+                                    case "${APPLICATION}" in
+                                        inventory-api) PORT=8104 ;;
+                                        inventory-web) PORT=8204 ;;
+                                        reporting-service) PORT=8304 ;;
+                                    esac
+                                fi
 
-                                $url = "http://localhost:$port/health"
-                            }
+                                echo "Checking port ${PORT}"
 
-                            Write-Host "[HEALTH CHECK] Probing $url..."
+                                curl \
+                                    --fail \
+                                    --silent \
+                                    --show-error \
+                                    --max-time 30 \
+                                    "http://localhost:${PORT}/health"
 
-                            try {
+                                if [ $? -eq 0 ]; then
+                                    echo "Health check: SUCCESS"
+                                    exit 0
+                                fi
 
-                                $response = Invoke-RestMethod `
-                                    -Uri $url `
-                                    -Method Get `
-                                    -TimeoutSec 5
-
-                                Write-Host "[HEALTH VERIFIED] Application is healthy."
-
-                                if ($app -eq "inventory-api") {
-
-                                    if ($response.status -ne "healthy") {
-                                        throw "Inventory API health status is not healthy."
-                                    }
-
-                                    if ($response.database -ne "connected") {
-                                        throw "Inventory API database is not connected."
-                                    }
-
-                                    if ($response.version -ne $env:VERSION) {
-                                        throw "Inventory API version mismatch. Expected $env:VERSION but received $($response.version)."
-                                    }
-
-                                    Write-Host "[HEALTH VERIFIED] API status: $($response.status)"
-                                    Write-Host "[HEALTH VERIFIED] Database: $($response.database)"
-                                    Write-Host "[HEALTH VERIFIED] Version: $($response.version)"
-                                }
-
-                            } catch {
-
-                                Write-Warning "[HEALTH FAILED] Deployment failed health verification."
-                                Write-Warning "[HEALTH FAILED] Triggering AUTOMATED ROLLBACK."
-
-                                wsl.exe bash -c "export ANSIBLE_USER=\"${env:ANSIBLE_USER}\" && export ANSIBLE_PASSWORD=\"${env:ANSIBLE_PASSWORD}\" && export NEXUS_USER=\"${env:NEXUS_CREDS_USR}\" && export NEXUS_PASSWORD=\"${env:NEXUS_CREDS_PSW}\" && export DB_PASSWORD=\"${env:DB_PASSWORD}\" && cd /mnt/c/nexora-devops-platform && ./cli/devopsctl/devopsctl rollback \"$env:APPLICATION\" --env \"$envName\" --from-version \"$env:VERSION\""
-
-                                if ($LASTEXITCODE -ne 0) {
-                                    Write-Error "[ROLLBACK FAILED] Automated rollback command failed."
-                                    exit 1
-                                }
-
-                                Write-Host "[ROLLBACK VERIFICATION] Waiting for restored application..."
-                                Start-Sleep -Seconds 3
-
-                                try {
-
-                                    $recoveryResponse = Invoke-RestMethod `
-                                        -Uri $url `
-                                        -Method Get `
-                                        -TimeoutSec 5
-
-                                    Write-Host "[ROLLBACK VERIFIED] Application successfully restored."
-
-                                    if ($app -eq "inventory-api") {
-                                        Write-Host "[ROLLBACK VERIFIED] Restored API version: $($recoveryResponse.version)"
-                                    }
-
-                                } catch {
-
-                                    Write-Error "[ROLLBACK VERIFICATION FAILED] Restored application is still unhealthy."
-                                    exit 1
-                                }
-
-                                Write-Error "[PIPELINE TERMINATION] Release rejected because health verification failed."
+                                echo "Health check: FAILED"
                                 exit 1
-                            }
-                        '''
+                            ''',
+                            returnStatus: true
+                        )
+
+                        if (healthResult != 0) {
+
+                            echo "Deployment health check failed."
+                            echo "Starting automated rollback."
+
+                            sh '''
+                                set -e
+
+                                export ANSIBLE_USER
+                                export ANSIBLE_PASSWORD
+                                export NEXUS_USER
+                                export NEXUS_PASSWORD
+                                export DB_PASSWORD
+
+                                chmod +x ./cli/devopsctl/devopsctl
+
+                                ./cli/devopsctl/devopsctl rollback \
+                                    "${APPLICATION}" \
+                                    --env "${TARGET_ENV}" \
+                                    --from-version "${VERSION}"
+                            '''
+
+                            error("Deployment failed health check and was automatically rolled back")
+                        }
+
+                        echo "Deployment health verification: SUCCESS"
                     }
                 }
             }
@@ -766,16 +603,39 @@ pipeline {
     }
 
     post {
-        always {
-            echo "[NOTIFICATION] Pipeline execution finished."
-        }
 
         success {
-            echo "[PIPELINE SUCCESS] ${params.APPLICATION} v${params.VERSION} deployed successfully to ${params.TARGET_ENV}."
+            echo """
+========================================
+RELEASE SUCCESS
+========================================
+Application : ${APPLICATION}
+Version     : ${VERSION}
+Environment : ${TARGET_ENV}
+Status      : SUCCESS
+========================================
+"""
         }
 
         failure {
-            echo "[PIPELINE FAILED] ${params.APPLICATION} v${params.VERSION} failed on ${params.TARGET_ENV}."
+            echo """
+========================================
+RELEASE FAILED
+========================================
+Application : ${APPLICATION}
+Version     : ${VERSION}
+Environment : ${TARGET_ENV}
+Status      : FAILED
+========================================
+"""
+        }
+
+        always {
+            sh '''
+                echo "Pipeline completed."
+                echo "Build: ${BUILD_NUMBER}"
+                echo "Commit: $(git rev-parse --short HEAD 2>/dev/null || echo unknown)"
+            '''
         }
     }
 }
