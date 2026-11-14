@@ -68,17 +68,19 @@ pipeline {
 
                         bat '''
                             @echo off
+
                             set "DOTNET_TOOLS=%USERPROFILE%\\.dotnet\\tools"
                             set "PATH=%DOTNET_TOOLS%;%PATH%"
 
                             echo [SONARQUBE] Preparing compatible SonarScanner for SonarQube 9.9...
+                            echo [SONARQUBE] Required compatible version: 5.15.0
 
                             dotnet tool uninstall --global dotnet-sonarscanner >nul 2>&1
 
-                            dotnet tool install --global dotnet-sonarscanner --version 5.15.1
+                            dotnet tool install --global dotnet-sonarscanner --version 5.15.0
 
                             if errorlevel 1 (
-                                echo [SONARQUBE ERROR] Failed to install dotnet-sonarscanner 5.15.1.
+                                echo [SONARQUBE ERROR] Failed to install dotnet-sonarscanner 5.15.0.
                                 exit /b 1
                             )
 
@@ -174,9 +176,6 @@ pipeline {
 
                         bat '''
                             @echo off
-
-                            set "DOTNET_TOOLS=%USERPROFILE%\\.dotnet\\tools"
-                            set "PATH=%DOTNET_TOOLS%;%PATH%"
 
                             cd /d "%BASE_DIR%\\applications\\reporting-service"
 
@@ -497,8 +496,7 @@ pipeline {
                         Authorization = "Basic $auth"
                     }
 
-                    Write-Host "[NEXUS] Publishing artifact to:"
-                    Write-Host "$nexusUri"
+                    Write-Host "[NEXUS] Publishing artifact..."
 
                     try {
 
@@ -542,13 +540,12 @@ pipeline {
                                 if ($remoteHash -eq $localHash) {
 
                                     Write-Host "[NEXUS INTEGRITY VERIFIED] Existing artifact matches SHA256."
-                                    Write-Host "[NEXUS] Existing immutable release may be reused."
 
                                 } else {
 
                                     Write-Error "[NEXUS CHECKSUM MISMATCH]"
-                                    Write-Error "Local :  $localHash"
-                                    Write-Error "Remote:  $remoteHash"
+                                    Write-Error "Local  : $localHash"
+                                    Write-Error "Remote : $remoteHash"
                                     Write-Error "Release rejected because immutable artifact differs."
                                     exit 1
                                 }
